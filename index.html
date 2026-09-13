@@ -1819,6 +1819,18 @@ response = requests.post(
         fetch(window.API_BASE + '/console/keys', {headers: authHeaders()}),
         fetch(window.API_BASE + '/console/usage', {headers: authHeaders()}),
       ]);
+      // A 401 here means the stored session token is no longer valid (expired,
+      // or issued under an old JWT secret) — previously this failed silently,
+      // making the UI look "signed in" with an empty account while every
+      // authenticated action (like creating a key) failed with "unauthorized".
+      // Catch it here instead and force a clean re-sign-in.
+      if(keysResp.status === 401 || usageResp.status === 401){
+        consoleState.sessionToken = null;
+        sessionStorage.removeItem('sentry_session_token');
+        alert('Your session has expired. Please sign in again.');
+        go('signin');
+        return;
+      }
       if(keysResp.ok){
         const data = await keysResp.json();
         consoleState.keys = data.keys || [];
