@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sentry AI — One API. Every model. Every feature. Free.</title>
+<title>Fluid Intelligence — One API. Every model. Every feature. Free.</title>
 <script>
   (function(){
     if(localStorage.getItem('sentry_theme') === 'light'){
@@ -14,7 +14,7 @@
 </script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Playfair+Display:ital,wght@1,600;1,700&display=swap" rel="stylesheet">
 <style>
   :root{
     --bg:#0d0d0d;
@@ -82,6 +82,23 @@
     display:flex;align-items:center;gap:8px;cursor:pointer;
   }
   .logo .dot{width:7px;height:7px;background:var(--amber);border-radius:50%;display:inline-block;}
+
+  /* ---------- BRAND WORDMARK ---------- */
+  .brand-cursive{
+    font-family:'Playfair Display', serif;
+    font-style:italic;
+    font-weight:700;
+    letter-spacing:0.005em;
+  }
+  .logo .brand-cursive{
+    font-size:1.15em;
+    line-height:1;
+    color:var(--ink);
+  }
+  h1#cs-greeting .brand-cursive{
+    font-size:1.05em;
+    color:var(--amber);
+  }
   nav.links{display:flex;gap:28px;align-items:center;}
   nav.links button.navlink{
     background:none;border:none;color:var(--ink-dim);font-family:var(--sans);
@@ -131,6 +148,40 @@
   }
   .hero-ctas{display:flex;gap:12px;margin-bottom:38px;}
   .hero-note{font-family:var(--mono);font-size:12.5px;color:var(--slate);}
+
+  /* ---------- TYPEWRITER LINE (rotating memes) ---------- */
+  .tw-row{
+    margin-top:14px;
+    font-family:var(--mono);
+    font-size:12.5px;
+    color:var(--ink-dim);
+    display:flex;
+    align-items:baseline;
+    gap:8px;
+    min-height:18px;
+  }
+  .tw-row .tw-label{
+    color:var(--amber);
+    font-weight:600;
+    flex-shrink:0;
+  }
+  .tw-row .tw-text{
+    white-space:pre-wrap;
+  }
+  .tw-cursor{
+    display:inline-block;
+    width:7px;
+    background:var(--amber);
+    margin-left:1px;
+    animation:tw-blink 0.9s step-end infinite;
+  }
+  @keyframes tw-blink{
+    0%,49%{opacity:1;}
+    50%,100%{opacity:0;}
+  }
+  @media (max-width:640px){
+    .tw-row{font-size:11.5px;}
+  }
 
   .feature-chips{
     display:flex;flex-wrap:wrap;gap:8px;margin-bottom:24px;
@@ -614,7 +665,7 @@
 
 <header class="nav">
   <div class="nav-inner">
-    <div class="logo" onclick="go('landing')"><span class="dot"></span>Sentry AI</div>
+    <div class="logo" onclick="go('landing')"><span class="dot"></span><span class="brand-cursive">Fluid Intelligence</span></div>
     <nav class="links" id="navlinks">
       <button class="navlink" onclick="go('docs')">Docs</button>
       <button class="navlink" onclick="scrollToId('how-it-works')">How it works</button>
@@ -657,6 +708,9 @@
           <button class="btn btn-ghost" onclick="go('docs')">Read the docs</button>
         </div>
         <div class="hero-note">No card required · 3,000 requests/day free, permanently</div>
+        <div class="tw-row">
+          <span class="tw-label">#</span><span class="tw-text" id="tw-meme"></span><span class="tw-cursor">&nbsp;</span>
+        </div>
       </div>
 
       <div class="panel">
@@ -1049,7 +1103,7 @@ response = requests.post(
         <!-- OVERVIEW -->
         <div class="console-pane active" id="cpane-overview">
           <div class="console-head">
-            <h1 id="cs-greeting">Welcome to Sentry AI</h1>
+            <h1 id="cs-greeting">Welcome to <span class="brand-cursive">Fluid Intelligence</span></h1>
             <p>Your account is live on the free plan — 3,000 requests a day, every feature enabled, no card on file.</p>
           </div>
 
@@ -1116,6 +1170,8 @@ response = requests.post(
                 <div class="pg-bubble pg-bubble-assistant">Ask me anything, toggle live web search for current events, or attach an image, document, video, or voice note below — every feature on the Models page is testable right here.</div>
               </div>
             </div>
+
+            <div class="backend-warn" id="pg-nokey-warn" style="margin:0 20px 12px;">You need an API key before you can message the playground. <a href="#" onclick="consoleGo('keys'); return false;" style="text-decoration:underline;">Create one on the API keys page</a> — it only takes a second.</div>
 
             <div class="pg-attachments" id="pg-attachments"></div>
 
@@ -1362,7 +1418,7 @@ response = requests.post(
       </div>
       <div class="simple-entry">
         <div class="se-top"><span class="se-date">2026-03-11</span><span class="se-title">Public launch</span></div>
-        <div class="se-desc">Sentry AI opened sign-ups with the free, permanent 3,000 requests/day plan.</div>
+        <div class="se-desc">Fluid Intelligence opened sign-ups with the free, permanent 3,000 requests/day plan.</div>
       </div>
     </div>
   </div>
@@ -1402,7 +1458,7 @@ response = requests.post(
     <div class="page-head">
       <div class="page-kicker">legal</div>
       <h1 class="page-title">Terms of service</h1>
-      <p class="page-desc">The short version of the agreement between you and Sentry AI.</p>
+      <p class="page-desc">The short version of the agreement between you and Fluid Intelligence.</p>
     </div>
     <div class="docs-body">
       <h3>Your account</h3>
@@ -1451,7 +1507,7 @@ response = requests.post(
 <footer>
   <div class="wrap footer-grid">
     <div class="footer-brand">
-      <div class="logo"><span class="dot"></span>Sentry AI</div>
+      <div class="logo"><span class="dot"></span><span class="brand-cursive">Fluid Intelligence</span></div>
       <div class="footer-tag">One API for every model and every feature, free to start and free to stay.</div>
     </div>
     <div class="footer-col">
@@ -1476,7 +1532,7 @@ response = requests.post(
     </div>
   </div>
   <div class="wrap footer-bottom">
-    <span>© 2026 Sentry AI</span>
+    <span>© 2026 Fluid Intelligence</span>
     <span>api.sentryai.ai</span>
   </div>
 </footer>
@@ -1800,6 +1856,19 @@ response = requests.post(
 
     renderKeysTable();
     renderUsage();
+
+    // Playground requires an active API key server-side — surface that up
+    // front instead of letting people find out only after sending a message.
+    const hasKey = consoleState.keys.length > 0;
+    const nokeyWarn = document.getElementById('pg-nokey-warn');
+    if(nokeyWarn){ nokeyWarn.classList.toggle('show', !hasKey); }
+    const pgInput = document.getElementById('pg-input');
+    const pgSendBtn = document.getElementById('pg-send-btn');
+    if(pgInput){
+      pgInput.disabled = !hasKey;
+      pgInput.placeholder = hasKey ? 'Message Sentry 1...' : 'Create an API key first to use the playground';
+    }
+    if(pgSendBtn){ pgSendBtn.disabled = !hasKey; }
   }
 
   function renderKeysTable(){
@@ -2001,6 +2070,11 @@ response = requests.post(
     const text = input.value.trim();
     if(!text && !pgAttachments.length) return;
 
+    if(window.API_BASE && !consoleState.keys.length){
+      alert('You need an API key before you can use the playground. Head to API keys and create one first.');
+      return;
+    }
+
     const label = text || `[${pgAttachments.map(a => a.kind).join(', ')}]`;
     pgAppendMessage('user', label);
     input.value = '';
@@ -2049,7 +2123,14 @@ response = requests.post(
         });
         const data = await resp.json();
         typingRow.remove();
-        pgAppendMessage('assistant', data.choices?.[0]?.message?.content || '(no content)');
+        if(!resp.ok){
+          // Surface the backend's actual error instead of a generic
+          // "(no content)" — e.g. "invalid API key", "create an API key
+          // first", "daily request cap exceeded", or a provider failure.
+          pgAppendMessage('assistant', 'Error (' + resp.status + '): ' + (data.error?.message || 'unknown error'));
+        } else {
+          pgAppendMessage('assistant', data.choices?.[0]?.message?.content || '(no content)');
+        }
       } catch(e) {
         typingRow.remove();
         pgAppendMessage('assistant', 'Request failed: ' + e.message);
@@ -2233,6 +2314,87 @@ print(response.json())`;
       loadConsoleFromServer();
     }
   };
+
+  /* if a valid session token is already stored, skip the landing page and
+     drop the user straight into the console instead of asking them to sign
+     in again on every visit/refresh */
+  if(consoleState.sessionToken){
+    go('console');
+  }
+
+  /* ---------- TYPEWRITER: rotating memes beside the hero tagline ---------- */
+  function startTypewriter(elId, lines, opts){
+    opts = opts || {};
+    var typeSpeed = opts.typeSpeed || 26;
+    var deleteSpeed = opts.deleteSpeed || 10;
+    var holdTime = opts.holdTime || 2200;
+    var gapTime = opts.gapTime || 450;
+    var el = document.getElementById(elId);
+    if(!el) return;
+    var lineIdx = 0, charIdx = 0, deleting = false;
+
+    function tick(){
+      var full = lines[lineIdx];
+      if(!deleting){
+        charIdx++;
+        el.textContent = full.slice(0, charIdx);
+        if(charIdx >= full.length){
+          deleting = true;
+          setTimeout(tick, holdTime);
+          return;
+        }
+        setTimeout(tick, typeSpeed);
+      } else {
+        charIdx--;
+        el.textContent = full.slice(0, charIdx);
+        if(charIdx <= 0){
+          deleting = false;
+          lineIdx = (lineIdx + 1) % lines.length;
+          setTimeout(tick, gapTime);
+          return;
+        }
+        setTimeout(tick, deleteSpeed);
+      }
+    }
+    tick();
+  }
+
+  var sentryMemeLines = [
+    'me: I will use AI responsibly. also me: 47 tabs open asking Sentry to name my cat',
+    'our uptime is more reliable than your group chat replies',
+    'free forever, unlike your gym membership resolve',
+    'we give you 1M context so you can finally paste the whole group chat',
+    'no credit card required, only your undivided attention',
+    'AI models are like siblings: same training data, wildly different personalities',
+    'streaming responses so fast your anxiety cant even keep up',
+    'extended reasoning: because sometimes the model needs a minute, we get it',
+    'function calling: teaching AI to actually do the dishes, eventually',
+    '3000 free requests a day, or as we call it, emotional support tokens',
+    'multimodal means it judges your fonts AND your code now',
+    'structured output: the only structure some of us have in our lives',
+    'live web search because even AI doubts your training data',
+    'sk-sentry- keys: the only secret you should never text your ex',
+    'our API is OpenAI-compatible, our vibes are unmatched',
+    'revoking a key takes effect immediately, unlike your New Years resolutions',
+    'one endpoint to rule them all, zero regrets to hold them',
+    'Sentry 1 today, Sentry 2 tomorrow, your rent unfortunately unchanged',
+    'AI wont replace you, but someone using Fluid Intelligence well might',
+    'we built this so you stop paying for tokens like they are concert tickets',
+    'context window so big it remembers your typos AND your dignity',
+    'no trial clock because commitment issues are a feature not a bug',
+    'our docs are shorter than your terms and conditions scrolling habit',
+    'built by people who also forgot their own API key at least once',
+    'Fluid Intelligence: fluent in code, sarcasm still in beta',
+    'every model, every feature, every excuse to procrastinate productively',
+    'we do vision too, mostly used to judge your desk setup',
+    'tail call optimization explained faster than your coworker explains anything',
+    'behind every great prompt is a slightly confused human, we see you',
+    'we are free so you can spend your budget on coffee, priorities first',
+    'AI generally: incredibly smart, still cannot find the TV remote',
+    'Fluid Intelligence: watching your tokens so you dont have to'
+  ];
+
+  startTypewriter('tw-meme', sentryMemeLines, {typeSpeed:26, deleteSpeed:10, holdTime:2200, gapTime:450});
 </script>
 
 </body>
