@@ -1825,9 +1825,15 @@ response = requests.post(
       // authenticated action (like creating a key) failed with "unauthorized".
       // Catch it here instead and force a clean re-sign-in.
       if(keysResp.status === 401 || usageResp.status === 401){
+        let detail = '';
+        try {
+          const failed = keysResp.status === 401 ? keysResp : usageResp;
+          const bodyText = await failed.clone().text();
+          detail = `\n\n[debug] ${failed.url}\nstatus: ${failed.status}\nbody: ${bodyText}`;
+        } catch(_e) { /* ignore — show the alert without the extra detail */ }
         consoleState.sessionToken = null;
         sessionStorage.removeItem('sentry_session_token');
-        alert('Your session has expired. Please sign in again.');
+        alert('Your session has expired. Please sign in again.' + detail);
         go('signin');
         return;
       }
@@ -1842,7 +1848,8 @@ response = requests.post(
         consoleState.usageHistory = data.history || consoleState.usageHistory;
       }
     } catch(e) {
-      // network hiccup — keep whatever was last loaded rather than blanking the console
+      // was silent before — now visible, since a phone has no DevTools console to check
+      alert('[debug] network error reaching the backend:\n' + e.message);
     }
     renderConsole();
   }
