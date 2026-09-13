@@ -1,2 +1,1 @@
-# SentryAi
-A unified AI platform providing developers with a single API for advanced models, intelligent tools, and multimodal AI capabilities.
+A unified AI platform giving developers free access to advanced models, intelligent tools, and multimodal AI capabilities through a single API.
