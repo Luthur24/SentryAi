@@ -125,7 +125,9 @@ def create_session_token(user_id: int) -> str:
         "sub": user_id,
         "exp": dt.datetime.utcnow() + dt.timedelta(hours=SESSION_HOURS),
     }
-    return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+    token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+    # older PyJWT versions return bytes instead of str — normalize either way
+    return token.decode() if isinstance(token, bytes) else token
 
 
 def verify_session_token(token: str):
@@ -586,13 +588,16 @@ def run_agentic_completion(messages: list, web_search_enabled: bool = True):
 
 DAILY_REQUEST_CAP = int(os.environ.get("DAILY_REQUEST_CAP", "3000"))
 MAX_INPUT_TOKENS = int(os.environ.get("MAX_INPUT_TOKENS", "8000"))  # matches the public "8K tokens/request" figure
-# dummy/dev default — set FRONTEND_ORIGIN to the real Vercel URL in production
-FRONTEND_ORIGIN = "https://fluidintelligence.vercel.app"
+# CORS: was locked to one exact hardcoded origin, which breaks the moment
+# your real Vercel URL differs by even a trailing slash or subdomain. Opened
+# up for now so a URL mismatch can't be the cause of anything — tighten this
+# back to your real domain once the app is stable and live.
+FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "*")
 
 
 def create_app():
     flask_app = Flask(__name__)
-    CORS(flask_app, origins=[FRONTEND_ORIGIN], supports_credentials=True)
+    CORS(flask_app, resources={r"/*": {"origins": FRONTEND_ORIGIN}})
 
     with flask_app.app_context():
         init_schema()
@@ -633,7 +638,9 @@ def create_app():
 
     def _require_session():
         header = request.headers.get("Authorization", "")
-        token = header.removeprefix("Bearer ").strip()
+        # manual strip instead of str.removeprefix() — that method needs
+        # Python 3.9+, and silently misbehaves as a no-op on older runtimes
+        token = header[7:].strip() if header.startswith("Bearer ") else header.strip()
         return verify_session_token(token)
 
     @flask_app.post("/console/password")
@@ -728,7 +735,7 @@ def create_app():
 
     def _require_api_key():
         header = request.headers.get("Authorization", "")
-        token = header.removeprefix("Bearer ").strip()
+        token = header[7:].strip() if header.startswith("Bearer ") else header.strip()
         return authenticate_api_key(token)
 
     def _check_and_increment_rate_limit(api_key_id: int, tokens_in: int = 0, tokens_out: int = 0) -> bool:
