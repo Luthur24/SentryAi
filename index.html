@@ -1,0 +1,2238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sentry AI — One API. Every model. Every feature. Free.</title>
+<script>
+  (function(){
+    if(localStorage.getItem('sentry_theme') === 'light'){
+      document.documentElement.setAttribute('data-theme', 'light');
+    }
+  })();
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0d0d0d;
+    --bg-raised:#161616;
+    --line:#2a2a2a;
+    --amber:#f2f2f2;
+    --amber-dim:#5c5c5c;
+    --on-amber:#0d0d0d;
+    --amber-hover:#ffffff;
+    --ink:#f2efe8;
+    --ink-dim:#a49c8c;
+    --slate:#7c8494;
+    --mono: 'IBM Plex Mono', monospace;
+    --sans: 'IBM Plex Sans', sans-serif;
+    --serif: 'Fraunces', serif;
+    --good:#8fae8f;
+    --bad:#b97a7a;
+  }
+  :root[data-theme="light"]{
+    --bg:#faf9f6;
+    --bg-raised:#ffffff;
+    --line:#e2ded4;
+    --amber:#171512;
+    --amber-dim:#c7c1b3;
+    --on-amber:#faf9f6;
+    --amber-hover:#000000;
+    --ink:#1b1815;
+    --ink-dim:#5c5548;
+    --slate:#6b7280;
+    --good:#3f7a45;
+    --bad:#a4453f;
+  }
+  *{box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--ink);
+    font-family:var(--sans);
+    -webkit-font-smoothing:antialiased;
+    transition:background-color .2s ease, color .2s ease;
+  }
+  a{color:inherit;text-decoration:none;}
+  ::selection{background:var(--amber-dim);color:var(--ink);}
+  :focus-visible{outline:2px solid var(--amber);outline-offset:2px;}
+  @media (prefers-reduced-motion: reduce){
+    *{animation-duration:0.01ms !important; transition-duration:0.01ms !important;}
+  }
+
+  .wrap{max-width:1040px;margin:0 auto;padding:0 28px;}
+
+  /* ---------- NAV ---------- */
+  header.nav{
+    position:sticky;top:0;z-index:50;
+    background:rgba(13,13,13,0.88);
+    backdrop-filter:blur(8px);
+    border-bottom:1px solid var(--line);
+  }
+  .nav-inner{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:18px 28px;max-width:1040px;margin:0 auto;
+  }
+  .logo{
+    font-family:var(--serif);font-size:20px;font-weight:600;letter-spacing:0.01em;
+    display:flex;align-items:center;gap:8px;cursor:pointer;
+  }
+  .logo .dot{width:7px;height:7px;background:var(--amber);border-radius:50%;display:inline-block;}
+  nav.links{display:flex;gap:28px;align-items:center;}
+  nav.links button.navlink{
+    background:none;border:none;color:var(--ink-dim);font-family:var(--sans);
+    font-size:14.5px;cursor:pointer;padding:6px 0;position:relative;
+  }
+  nav.links button.navlink:hover{color:var(--ink);}
+  .nav-cta{display:flex;gap:10px;align-items:center;}
+  .btn{
+    font-family:var(--sans);font-size:14px;font-weight:500;
+    padding:9px 18px;border-radius:3px;cursor:pointer;border:1px solid transparent;
+    transition:background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  }
+  .btn-ghost{background:none;border-color:var(--line);color:var(--ink);}
+  .btn-ghost:hover{border-color:var(--slate);}
+  .btn-solid{background:var(--amber);color:var(--on-amber);font-weight:600;}
+  .btn-solid:hover{background:var(--amber-hover);}
+  .btn-solid:disabled{background:var(--amber-dim);color:var(--on-amber);cursor:not-allowed;opacity:0.6;}
+  .btn:disabled{cursor:not-allowed;}
+  .navburger{display:none;background:none;border:none;color:var(--ink);font-size:22px;cursor:pointer;}
+
+  .theme-toggle{
+    display:flex;align-items:center;justify-content:center;width:34px;height:34px;
+    border:1px solid var(--line);border-radius:50%;background:none;color:var(--ink);cursor:pointer;
+  }
+  .theme-toggle:hover{border-color:var(--slate);}
+  .theme-icon-light{display:none;}
+  :root[data-theme="light"] .theme-icon-dark{display:none;}
+  :root[data-theme="light"] .theme-icon-light{display:block;}
+
+  /* ---------- HERO ---------- */
+  .hero{padding:88px 0 72px;}
+  .hero-grid{display:grid;grid-template-columns:1.05fr 0.95fr;gap:56px;align-items:start;}
+  .eyebrow-line{
+    font-family:var(--mono);font-size:12.5px;color:var(--slate);
+    margin-bottom:22px;display:flex;align-items:center;gap:10px;
+  }
+  .eyebrow-line::before{content:'';width:16px;height:1px;background:var(--slate);display:inline-block;}
+  h1.headline{
+    font-family:var(--serif);font-weight:500;
+    font-size:clamp(34px,4.6vw,56px);
+    line-height:1.06;letter-spacing:-0.01em;
+    margin:0 0 22px;max-width:11ch;
+  }
+  .sub{
+    font-size:17px;line-height:1.6;color:var(--ink-dim);
+    max-width:46ch;margin:0 0 34px;
+  }
+  .hero-ctas{display:flex;gap:12px;margin-bottom:38px;}
+  .hero-note{font-family:var(--mono);font-size:12.5px;color:var(--slate);}
+
+  .feature-chips{
+    display:flex;flex-wrap:wrap;gap:8px;margin-bottom:24px;
+  }
+  .feature-chips .chip{
+    font-family:var(--mono);font-size:11.5px;color:var(--ink-dim);
+    border:1px solid var(--line);border-radius:20px;
+    padding:6px 13px;background:var(--bg-raised);
+    white-space:nowrap;transition:border-color 0.15s ease, color 0.15s ease;
+  }
+  .feature-chips .chip:hover{border-color:var(--slate);color:var(--ink);}
+  .feature-chips .chip.highlight{
+    color:var(--on-amber);background:var(--amber);border-color:var(--amber);font-weight:600;
+  }
+  .free-badge{
+    display:inline-flex;align-items:center;gap:8px;
+    font-family:var(--mono);font-size:12px;color:var(--ink);
+    border:1px solid var(--line);border-radius:20px;
+    padding:6px 14px;margin-bottom:20px;background:var(--bg-raised);
+  }
+
+  .trust-bar{
+    border-top:1px solid var(--line);border-bottom:1px solid var(--line);
+    padding:22px 0;
+  }
+  .trust-bar .wrap{
+    display:flex;flex-wrap:wrap;gap:28px;justify-content:space-between;align-items:center;
+  }
+  .trust-item{
+    display:flex;align-items:baseline;gap:8px;font-family:var(--mono);font-size:12.5px;color:var(--slate);
+  }
+  .trust-item strong{
+    font-family:var(--serif);font-size:19px;color:var(--ink);font-weight:500;
+  }
+  .trust-item.stat-highlight strong{
+    font-family:var(--mono);font-size:26px;color:var(--ink);font-weight:600;letter-spacing:-0.01em;
+  }
+
+  .faq-list{border-top:1px solid var(--line);}
+  .faq-item{padding:20px 0;border-bottom:1px solid var(--line);}
+  .faq-q{font-weight:600;font-size:15px;margin-bottom:8px;}
+  .faq-a{font-size:14px;color:var(--ink-dim);line-height:1.6;max-width:60ch;}
+
+  /* code panel */
+  .panel{
+    background:var(--bg-raised);border:1px solid var(--line);border-radius:4px;
+    overflow:hidden;
+  }
+  .panel-head{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:10px 16px;border-bottom:1px solid var(--line);
+  }
+  .panel-title{font-family:var(--mono);font-size:12px;color:var(--slate);}
+  .panel-dots{display:flex;gap:6px;}
+  .panel-dots span{width:7px;height:7px;border-radius:50%;background:var(--line);}
+  pre.code{
+    margin:0;padding:18px 16px;font-family:var(--mono);font-size:12.8px;line-height:1.65;
+    color:var(--ink-dim);overflow-x:auto;
+  }
+  .code .k{color:#d9d9d9;}
+  .code .s{color:#b8b8b8;}
+  .code .p{color:var(--slate);}
+  .code .c{color:var(--amber);}
+
+  /* language tabs on code panel */
+  .panel-tabs{display:flex;gap:4px;}
+  .tab-btn{
+    font-family:var(--mono);font-size:11.5px;color:var(--slate);
+    background:none;border:1px solid var(--line);border-radius:3px;
+    padding:5px 11px;cursor:pointer;transition:color 0.15s ease, border-color 0.15s ease;
+  }
+  .tab-btn:hover{color:var(--ink);}
+  .tab-btn.active{color:var(--amber);border-color:var(--amber-dim);}
+  .tab-pane{display:none;}
+  .tab-pane.active{display:block;}
+
+  /* dedicated tab pair for the API-key-reveal snippet, kept separate from
+     .tab-btn/.tab-pane above so clicking the hero code tabs can't touch it */
+  .km-tab-btn{
+    font-family:var(--mono);font-size:11.5px;color:var(--slate);
+    background:none;border:1px solid var(--line);border-radius:3px;
+    padding:5px 11px;cursor:pointer;transition:color 0.15s ease, border-color 0.15s ease;
+  }
+  .km-tab-btn:hover{color:var(--ink);}
+  .km-tab-btn.active{color:var(--amber);border-color:var(--amber-dim);}
+  .km-tab-pane{display:none;}
+  .km-tab-pane.active{display:block;}
+
+  .backend-warn{
+    font-family:var(--mono);font-size:12px;color:var(--bad);
+    border:1px solid var(--bad);border-radius:4px;
+    padding:10px 12px;margin-bottom:20px;background:rgba(185,122,122,0.08);
+    display:none;
+  }
+  .backend-warn.show{display:block;}
+
+  /* ---------- SECTION SHARED ---------- */
+  section{padding:64px 0;border-top:1px solid var(--line);}
+  .section-head{max-width:52ch;margin-bottom:40px;}
+  .section-kicker{font-family:var(--mono);font-size:12.5px;color:var(--slate);margin-bottom:10px;}
+  h2.section-title{
+    font-family:var(--serif);font-weight:500;font-size:clamp(24px,3vw,32px);
+    line-height:1.15;margin:0 0 14px;
+  }
+  .section-desc{color:var(--ink-dim);font-size:15.5px;line-height:1.6;max-width:56ch;}
+
+  /* features list */
+  .feature-list{display:grid;grid-template-columns:repeat(2,1fr);gap:0;border-top:1px solid var(--line);}
+  .feature-item{
+    padding:20px 0 20px 0;border-bottom:1px solid var(--line);
+    padding-right:24px;
+  }
+  .feature-item:nth-child(odd){border-right:1px solid var(--line);padding-left:0;}
+  .feature-item:nth-child(even){padding-left:24px;}
+  .feature-name{font-family:var(--sans);font-weight:600;font-size:15px;margin-bottom:6px;}
+  .feature-desc{font-size:14px;color:var(--ink-dim);line-height:1.55;}
+
+  /* free block */
+  .free-block{
+    display:grid;grid-template-columns:0.9fr 1.1fr;gap:48px;align-items:center;
+  }
+  .free-figure{
+    border:1px solid var(--line);border-radius:4px;padding:26px;background:var(--bg-raised);
+  }
+  .free-row{display:flex;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line);font-size:13.5px;}
+  .free-row:last-child{border-bottom:none;}
+  .free-row .k{color:var(--ink-dim);}
+  .free-row .v{font-family:var(--mono);color:var(--ink);}
+  .free-row .v.on{color:var(--amber);}
+
+  /* how it works */
+  .steps{display:flex;flex-direction:column;}
+  .step{
+    display:grid;grid-template-columns:64px 1fr;gap:20px;
+    padding:26px 0;border-bottom:1px solid var(--line);
+  }
+  .step:first-child{padding-top:0;}
+  .step:last-child{border-bottom:none;}
+  .step-index{font-family:var(--serif);font-size:26px;color:var(--amber-dim);}
+  .step-title{font-weight:600;font-size:16px;margin-bottom:6px;}
+  .step-desc{color:var(--ink-dim);font-size:14.5px;line-height:1.6;max-width:52ch;}
+
+  /* footer */
+  footer{border-top:1px solid var(--line);padding:44px 0 36px;}
+  .footer-grid{display:grid;grid-template-columns:1.4fr repeat(3,1fr);gap:32px;}
+  .footer-brand .logo{margin-bottom:12px;}
+  .footer-tag{color:var(--slate);font-size:13.5px;max-width:32ch;line-height:1.5;}
+  .footer-col-title{font-family:var(--mono);font-size:11.5px;color:var(--slate);margin-bottom:14px;letter-spacing:0.02em;}
+  .footer-col a{display:block;font-size:14px;color:var(--ink-dim);margin-bottom:10px;background:none;border:none;cursor:pointer;text-align:left;font-family:var(--sans);padding:0;}
+  .footer-col a:hover{color:var(--ink);}
+  .footer-bottom{
+    margin-top:36px;padding-top:20px;border-top:1px solid var(--line);
+    display:flex;justify-content:space-between;font-size:12.5px;color:var(--slate);font-family:var(--mono);
+  }
+
+  /* ---------- AUX VIEWS (signup/signin/docs/console) ---------- */
+  .view{display:none;}
+  .view.active{display:block;}
+
+  .auth-wrap{
+    max-width:400px;margin:80px auto;padding:0 28px;
+  }
+  .auth-card{border:1px solid var(--line);border-radius:4px;padding:34px;background:var(--bg-raised);}
+  .auth-card h2{font-family:var(--serif);font-weight:500;font-size:24px;margin:0 0 6px;}
+  .auth-sub{color:var(--slate);font-size:13.5px;margin-bottom:26px;}
+  .field{margin-bottom:16px;}
+  .field label{display:block;font-size:12.5px;color:var(--ink-dim);margin-bottom:6px;font-family:var(--mono);}
+  .field input{
+    width:100%;background:var(--bg);border:1px solid var(--line);border-radius:3px;
+    padding:10px 12px;color:var(--ink);font-family:var(--sans);font-size:14px;
+  }
+  .field input:focus{border-color:var(--amber-dim);}
+  .auth-submit{width:100%;margin-top:6px;text-align:center;}
+  .auth-divider{display:flex;align-items:center;gap:12px;margin:20px 0;color:var(--slate);font-size:12px;font-family:var(--mono);}
+  .auth-divider::before,.auth-divider::after{content:'';flex:1;height:1px;background:var(--line);}
+  .auth-switch{margin-top:20px;text-align:center;font-size:13.5px;color:var(--slate);}
+  .auth-switch button{background:none;border:none;color:var(--amber);cursor:pointer;font-size:13.5px;font-family:var(--sans);padding:0;}
+
+  /* progressive auth steps */
+  .auth-steps{display:flex;gap:6px;margin-bottom:24px;}
+  .auth-steps .dash{height:2px;flex:1;background:var(--line);border-radius:2px;overflow:hidden;}
+  .auth-steps .dash i{display:block;height:100%;width:0%;background:var(--amber);transition:width 0.25s ease;}
+  .auth-steps .dash.done i{width:100%;}
+  .auth-steps .dash.active i{width:100%;}
+  .auth-stage{display:none;}
+  .auth-stage.active{display:block;}
+  .auth-back{background:none;border:none;color:var(--slate);font-family:var(--mono);font-size:12px;cursor:pointer;padding:0;margin-bottom:18px;display:inline-flex;align-items:center;gap:6px;}
+  .auth-back:hover{color:var(--ink);}
+  .stage-context{font-family:var(--mono);font-size:12.5px;color:var(--slate);margin-bottom:20px;padding:8px 12px;border:1px solid var(--line);border-radius:3px;background:var(--bg);}
+
+  .pw-field{position:relative;}
+  .pw-field input{padding-right:40px;}
+  .pw-eye{
+    position:absolute;right:0;top:0;height:100%;width:38px;
+    background:none;border:none;color:var(--slate);cursor:pointer;
+    display:flex;align-items:center;justify-content:center;
+  }
+  .pw-eye:hover{color:var(--ink);}
+  .pw-eye svg{width:17px;height:17px;}
+
+  .pw-requirements{list-style:none;margin:12px 0 0;padding:0;display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;}
+  .pw-requirements li{
+    font-family:var(--mono);font-size:11.5px;color:var(--slate);
+    display:flex;align-items:center;gap:6px;transition:color 0.15s ease;
+  }
+  .pw-requirements li .mark{
+    width:13px;height:13px;border-radius:50%;border:1px solid var(--slate);
+    flex:none;position:relative;transition:border-color 0.15s ease,background 0.15s ease;
+  }
+  .pw-requirements li.met{color:var(--good);}
+  .pw-requirements li.met .mark{background:var(--good);border-color:var(--good);}
+  .pw-requirements li.met .mark::after{
+    content:'';position:absolute;left:3.5px;top:1.5px;width:4px;height:7px;
+    border-right:1.5px solid #0d0d0d;border-bottom:1.5px solid #0d0d0d;transform:rotate(45deg);
+  }
+  .pw-match{font-family:var(--mono);font-size:11.5px;margin-top:8px;color:var(--slate);}
+  .pw-match.ok{color:var(--good);}
+  .pw-match.bad{color:var(--bad);}
+  .field-error{font-family:var(--mono);font-size:11.5px;color:var(--bad);margin-top:6px;display:none;}
+  .field-error.show{display:block;}
+  .field input.invalid{border-color:var(--bad);}
+
+  .page-wrap{max-width:1040px;margin:0 auto;padding:64px 28px 90px;}
+  .page-head{margin-bottom:44px;max-width:56ch;}
+  .page-kicker{font-family:var(--mono);font-size:12.5px;color:var(--slate);margin-bottom:10px;}
+  .page-title{font-family:var(--serif);font-weight:500;font-size:clamp(28px,3.4vw,38px);margin:0 0 14px;}
+  .page-desc{color:var(--ink-dim);font-size:15.5px;line-height:1.6;}
+
+  .docs-body{color:var(--ink-dim);font-size:15px;line-height:1.7;max-width:62ch;}
+  .docs-body h3{font-family:var(--sans);color:var(--ink);font-size:16px;margin:28px 0 10px;}
+
+  /* simple content pages: changelog / status / terms / privacy */
+  .simple-list{border-top:1px solid var(--line);}
+  .simple-entry{padding:20px 0;border-bottom:1px solid var(--line);}
+  .simple-entry .se-top{display:flex;align-items:baseline;gap:12px;margin-bottom:6px;}
+  .simple-entry .se-date{font-family:var(--mono);font-size:11.5px;color:var(--slate);}
+  .simple-entry .se-title{font-weight:600;font-size:15px;}
+  .simple-entry .se-desc{color:var(--ink-dim);font-size:14px;line-height:1.6;max-width:60ch;}
+  .status-row{display:flex;align-items:center;justify-content:space-between;padding:14px 0;border-bottom:1px solid var(--line);font-size:14px;}
+  .status-row:last-child{border-bottom:none;}
+  .status-dot{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:12px;color:var(--good);}
+  .status-dot::before{content:'';width:7px;height:7px;border-radius:50%;background:var(--good);display:inline-block;}
+
+  /* ---------- OCEAN BACKGROUND ---------- */
+  .ocean-bg{
+    position:fixed;inset:0;z-index:0;overflow:hidden;pointer-events:none;
+    opacity:0.16;
+  }
+  .ocean-bg svg{position:absolute;top:0;left:0;width:200%;height:52vh;min-height:340px;transform:scaleY(-1);}
+  .ocean-bg .layer1{animation:driftLeft 34s linear infinite;top:-6px;opacity:0.55;}
+  .ocean-bg .layer2{animation:driftRight 46s linear infinite;top:10px;opacity:0.4;}
+  .ocean-bg .layer3{animation:driftLeft 60s linear infinite;top:26px;opacity:0.3;}
+  @keyframes driftLeft{
+    from{transform:translateX(0);}
+    to{transform:translateX(-50%);}
+  }
+  @keyframes driftRight{
+    from{transform:translateX(-50%);}
+    to{transform:translateX(0);}
+  }
+  header.nav, .view, footer{position:relative;z-index:1;}
+
+  /* ---------- FEATURE CARDS (flowing animated border) ---------- */
+  .feature-list{
+    display:grid;grid-template-columns:repeat(2,1fr);gap:16px;border-top:none;
+  }
+  .feature-item{
+    position:relative;
+    border-radius:8px;
+    padding:2px;
+    background:conic-gradient(from var(--angle,0deg), transparent 0% 70%, var(--amber) 85%, transparent 100%);
+    animation:borderRotate 5s linear infinite;
+    border:none;
+  }
+  .feature-item:nth-child(even){padding-left:2px;}
+  .feature-item::before{
+    content:'';
+    position:absolute;inset:1px;
+    background:var(--bg-raised);
+    border-radius:7px;
+    z-index:0;
+  }
+  .feature-item > *{position:relative;z-index:1;}
+  .feature-item-inner{
+    padding:20px 22px;
+  }
+  @property --angle{
+    syntax:'<angle>';
+    initial-value:0deg;
+    inherits:false;
+  }
+  @keyframes borderRotate{
+    to{--angle:360deg;}
+  }
+  .feature-item:nth-child(2n){animation-duration:6.5s;animation-direction:reverse;}
+  .feature-item:nth-child(3n){animation-duration:7.5s;}
+
+  /* full configuration panel */
+  .config-panel{margin-top:16px;}
+  .config-panel pre.code{max-height:520px;overflow-y:auto;}
+
+  /* ---------- CONSOLE (internal app) ---------- */
+  .console-shell{display:grid;grid-template-columns:216px 1fr;gap:0;align-items:start;}
+  .console-sidebar{border-right:1px solid var(--line);padding:0 20px 40px 0;position:sticky;top:76px;}
+  .cs-user{padding:0 12px 18px;margin-bottom:10px;border-bottom:1px solid var(--line);}
+  .cs-user .cs-email{font-family:var(--sans);font-size:13.5px;color:var(--ink);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .cs-user .cs-plan{font-family:var(--mono);font-size:11px;color:var(--slate);margin-top:4px;}
+  .console-nav-btn{
+    display:flex;align-items:center;gap:9px;width:100%;text-align:left;background:none;border:none;
+    color:var(--ink-dim);font-family:var(--sans);font-size:14px;padding:10px 12px;border-radius:4px;
+    cursor:pointer;margin-bottom:2px;border-left:2px solid transparent;
+  }
+  .console-nav-btn:hover{color:var(--ink);background:var(--bg-raised);}
+  .console-nav-btn.active{color:var(--ink);background:var(--bg-raised);border-left:2px solid var(--amber);}
+  .console-main{padding:0 0 60px 36px;min-width:0;}
+  .console-pane{display:none;}
+  .console-pane.active{display:block;}
+  .console-head{margin-bottom:28px;}
+  .console-head h1{font-family:var(--serif);font-weight:500;font-size:26px;margin:0 0 8px;}
+  .console-head p{color:var(--ink-dim);font-size:14.5px;line-height:1.6;margin:0;max-width:56ch;}
+
+  .stat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:32px;}
+  .stat-card{border:1px solid var(--line);border-radius:5px;padding:16px 18px;background:var(--bg-raised);}
+
+  .pg-shell{display:flex;flex-direction:column;height:calc(100vh - 220px);min-height:520px;max-width:840px;margin:0 auto;}
+
+  .pg-topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding-bottom:14px;margin-bottom:14px;border-bottom:1px solid var(--line);}
+  .pg-topbar-right{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+  .pg-model-pill{display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:13px;color:var(--ink);background:var(--bg-raised);border:1px solid var(--line);padding:6px 12px;border-radius:99px;}
+  .pg-model-dot{width:7px;height:7px;border-radius:50%;background:#3ecf6e;box-shadow:0 0 0 3px rgba(62,207,110,.15);}
+
+  .pg-chip{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12.5px;color:var(--slate);background:transparent;border:1px solid var(--line);padding:6px 11px;border-radius:99px;cursor:pointer;transition:all .15s ease;}
+  .pg-chip:hover{border-color:var(--slate);color:var(--ink);}
+  .pg-chip.on{background:var(--amber);border-color:var(--amber);color:var(--on-amber);font-weight:600;}
+
+  .pg-segmented{display:flex;border:1px solid var(--line);border-radius:99px;padding:2px;gap:2px;}
+  .pg-seg-btn{font-family:var(--mono);font-size:12px;color:var(--slate);background:transparent;border:none;padding:5px 11px;border-radius:99px;cursor:pointer;}
+  .pg-seg-btn.active{background:var(--ink);color:var(--bg);}
+
+  .pg-chat{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:18px;padding:8px 4px 20px;}
+  .pg-row{display:flex;gap:12px;align-items:flex-start;}
+  .pg-row-user{flex-direction:row-reverse;}
+  .pg-avatar{width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:13px;font-weight:600;flex-shrink:0;}
+  .pg-avatar-assistant{background:var(--amber);color:var(--on-amber);}
+  .pg-avatar-user{background:var(--bg-raised);border:1px solid var(--line);color:var(--ink);}
+  .pg-bubble{max-width:72%;padding:11px 15px;border-radius:14px;font-size:14.5px;line-height:1.6;white-space:pre-wrap;word-break:break-word;}
+  .pg-bubble-assistant{background:var(--bg-raised);border:1px solid var(--line);color:var(--ink);border-top-left-radius:4px;}
+  .pg-bubble-user{background:var(--amber);color:var(--on-amber);border-top-right-radius:4px;}
+  .pg-bubble-status{background:transparent;border:1px dashed var(--line);color:var(--slate);font-family:var(--mono);font-size:12px;}
+
+  .pg-typing{display:inline-flex;gap:4px;padding:4px 0;}
+  .pg-typing span{width:6px;height:6px;border-radius:50%;background:var(--slate);animation:pgBounce 1.1s infinite ease-in-out;}
+  .pg-typing span:nth-child(2){animation-delay:.15s;}
+  .pg-typing span:nth-child(3){animation-delay:.3s;}
+  @keyframes pgBounce{0%,60%,100%{transform:translateY(0);opacity:.4;}30%{transform:translateY(-4px);opacity:1;}}
+
+  .pg-attachments{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px;}
+  .pg-attach-chip{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12px;color:var(--ink);background:var(--bg-raised);border:1px solid var(--line);padding:5px 10px;border-radius:8px;}
+  .pg-attach-chip button{background:none;border:none;color:var(--slate);cursor:pointer;font-size:13px;line-height:1;padding:0;}
+  .pg-attach-chip button:hover{color:var(--ink);}
+
+  .pg-composer{display:flex;align-items:flex-end;gap:8px;border:1px solid var(--line);border-radius:20px;padding:8px 8px 8px 10px;background:var(--bg-raised);}
+  .pg-attach-wrap{position:relative;flex-shrink:0;}
+  .pg-attach-btn{width:36px;height:36px;border-radius:50%;border:1px solid var(--line);background:var(--bg);color:var(--ink);display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;}
+  .pg-attach-btn:hover{border-color:var(--amber);}
+  .pg-attach-menu{display:none;position:absolute;bottom:44px;left:0;background:var(--bg-raised);border:1px solid var(--line);border-radius:10px;padding:6px;min-width:170px;box-shadow:0 8px 24px rgba(0,0,0,.35);z-index:20;}
+  .pg-attach-menu.open{display:flex;flex-direction:column;}
+  .pg-attach-menu button{display:flex;align-items:center;gap:9px;background:none;border:none;color:var(--ink);font-family:var(--sans);font-size:13px;padding:8px 10px;border-radius:6px;cursor:pointer;text-align:left;}
+  .pg-attach-menu button:hover{background:var(--bg);}
+  .pg-attach-menu button.recording{color:#e0554f;}
+
+  .pg-textarea{flex:1;resize:none;border:none;background:transparent;color:var(--ink);font-family:var(--sans);font-size:14.5px;line-height:1.5;padding:7px 4px;max-height:160px;outline:none;}
+  .pg-textarea::placeholder{color:var(--slate);}
+
+  .pg-send-btn{width:36px;height:36px;border-radius:50%;border:none;background:var(--amber);color:var(--on-amber);display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;transition:transform .1s ease;}
+  .pg-send-btn:hover{transform:scale(1.05);}
+  .pg-send-btn:disabled{opacity:.4;cursor:default;transform:none;}
+
+  .pg-hint{text-align:center;font-size:11px;color:var(--slate);font-family:var(--mono);margin-top:8px;}
+
+  @media (max-width:640px){
+    .pg-bubble{max-width:85%;}
+    .pg-topbar{flex-direction:column;align-items:flex-start;}
+  }
+  .stat-card .stat-label{font-family:var(--mono);font-size:11px;color:var(--slate);margin-bottom:10px;text-transform:uppercase;letter-spacing:0.03em;}
+  .stat-card .stat-value{font-family:var(--serif);font-size:25px;color:var(--ink);}
+  .stat-card .stat-sub{font-family:var(--mono);font-size:11px;color:var(--slate);margin-top:6px;}
+
+  .console-section-title{font-family:var(--sans);font-weight:600;font-size:14.5px;color:var(--ink);margin:0 0 14px;display:flex;align-items:center;justify-content:space-between;}
+
+  .keys-empty{border:1px dashed var(--line);border-radius:6px;padding:36px 24px;text-align:center;color:var(--ink-dim);font-size:14px;margin-bottom:20px;}
+  .keys-table{width:100%;border-collapse:collapse;font-size:13.5px;margin-bottom:8px;}
+  .keys-table th{text-align:left;font-family:var(--mono);font-size:10.5px;color:var(--slate);padding:9px 10px;border-bottom:1px solid var(--line);text-transform:uppercase;letter-spacing:0.03em;font-weight:500;}
+  .keys-table td{padding:13px 10px;border-bottom:1px solid var(--line);color:var(--ink-dim);vertical-align:middle;}
+  .keys-table td.key-name{color:var(--ink);font-weight:500;}
+  .keys-table code.key-val{font-family:var(--mono);font-size:12px;color:var(--ink-dim);}
+  .key-actions{text-align:right;}
+  .key-actions button{background:none;border:1px solid var(--line);color:var(--bad);font-family:var(--mono);font-size:11px;padding:5px 10px;border-radius:3px;cursor:pointer;}
+  .key-actions button:hover{border-color:var(--bad);background:rgba(185,122,122,0.08);}
+
+  .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.62);z-index:200;display:none;align-items:center;justify-content:center;padding:20px;}
+  .modal-overlay.active{display:flex;}
+  .modal-box{background:var(--bg-raised);border:1px solid var(--line);border-radius:6px;padding:28px;max-width:480px;width:100%;}
+  .modal-box h3{font-family:var(--serif);font-weight:500;font-size:19px;margin:0 0 10px;color:var(--ink);}
+  .modal-box p{font-size:13.5px;color:var(--ink-dim);line-height:1.6;margin:0 0 16px;}
+  .key-reveal{display:flex;gap:8px;align-items:center;background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:10px 12px;font-family:var(--mono);font-size:12px;color:var(--ink);word-break:break-all;margin-bottom:14px;}
+  .key-reveal button{background:none;border:none;color:var(--amber);cursor:pointer;font-family:var(--mono);font-size:11px;flex:none;}
+  .modal-actions{display:flex;justify-content:flex-end;gap:10px;}
+  .modal-warn{font-family:var(--mono);font-size:11.5px;color:var(--bad);margin:-6px 0 16px;}
+
+  .usage-chart{display:flex;align-items:flex-end;gap:8px;height:150px;border-bottom:1px solid var(--line);margin:18px 0 8px;}
+  .usage-bar-wrap{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;}
+  .usage-bar{width:100%;background:var(--amber-dim);border-radius:2px 2px 0 0;transition:background 0.15s ease;position:relative;}
+  .usage-bar-wrap:hover .usage-bar{background:var(--amber);}
+  .usage-count{font-family:var(--mono);font-size:10px;color:var(--slate);margin-bottom:6px;}
+  .usage-labels{display:flex;gap:8px;margin-bottom:28px;}
+  .usage-labels span{flex:1;text-align:center;font-family:var(--mono);font-size:10.5px;color:var(--slate);}
+  .usage-meter-row{display:flex;justify-content:space-between;font-family:var(--mono);font-size:12px;color:var(--ink-dim);margin-bottom:8px;}
+  .usage-meter{height:6px;border-radius:3px;background:var(--line);overflow:hidden;margin-bottom:28px;}
+  .usage-meter i{display:block;height:100%;background:var(--amber);border-radius:3px;}
+
+  .model-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+  .model-card{border:1px solid var(--line);border-radius:6px;padding:18px 20px;background:var(--bg-raised);}
+  .model-card .mc-top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;}
+  .model-card .mc-name{font-family:var(--mono);font-weight:600;font-size:13.5px;color:var(--ink);}
+  .model-card .mc-ctx{font-family:var(--mono);font-size:11px;color:var(--slate);}
+  .model-card .mc-desc{font-size:13px;color:var(--ink-dim);line-height:1.55;margin-bottom:12px;}
+  .model-card .mc-tags{display:flex;gap:6px;flex-wrap:wrap;}
+  .model-card .mc-tags span{font-family:var(--mono);font-size:10px;color:var(--slate);border:1px solid var(--line);border-radius:10px;padding:3px 8px;}
+
+  .danger-zone{border:1px solid var(--bad);border-radius:6px;padding:18px 20px;margin-top:32px;}
+  .danger-zone .dz-title{font-weight:600;font-size:14px;color:var(--bad);margin-bottom:6px;}
+  .danger-zone p{font-size:13px;color:var(--ink-dim);margin:0 0 14px;line-height:1.55;}
+  .btn-danger{background:none;border:1px solid var(--bad);color:var(--bad);}
+  .btn-danger:hover{background:rgba(185,122,122,0.1);}
+  .settings-block{max-width:440px;margin-bottom:8px;}
+  .settings-block .field input:disabled{color:var(--slate);cursor:not-allowed;}
+  .save-note{font-family:var(--mono);font-size:11.5px;color:var(--good);margin-top:8px;display:none;}
+  .save-note.show{display:block;}
+
+  @media (max-width:820px){
+    .console-shell{grid-template-columns:1fr;}
+    .console-sidebar{position:static;border-right:none;border-bottom:1px solid var(--line);padding:0 0 20px;margin-bottom:20px;display:flex;flex-wrap:wrap;gap:4px;}
+    .cs-user{width:100%;}
+    .console-nav-btn{width:auto;flex:none;}
+    .console-main{padding-left:0;}
+    .stat-grid{grid-template-columns:1fr;}
+    .model-grid{grid-template-columns:1fr;}
+  }
+
+  /* ---------- RESPONSIVE ---------- */
+  @media (max-width:820px){
+    .hero-grid{grid-template-columns:1fr;}
+    .feature-list{grid-template-columns:1fr;}
+    .free-block{grid-template-columns:1fr;}
+    .footer-grid{grid-template-columns:1fr 1fr;gap:28px;}
+    .pw-requirements{grid-template-columns:1fr;}
+    nav.links{
+      display:none;position:absolute;top:100%;left:0;right:0;
+      background:var(--bg);border-bottom:1px solid var(--line);
+      flex-direction:column;padding:16px 28px;gap:16px;
+    }
+    nav.links.open{display:flex;}
+    .navburger{display:block;}
+  }
+</style>
+</head>
+<body>
+
+<div class="ocean-bg" aria-hidden="true">
+  <svg class="layer1" viewBox="0 0 2400 220" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M0,110 C150,150 300,60 450,100 C600,140 750,60 900,100 C1050,140 1200,60 1350,100 C1500,140 1650,60 1800,100 C1950,140 2100,60 2250,100 C2325,120 2375,105 2400,100 L2400,220 L0,220 Z" fill="#7c8494"/>
+  </svg>
+  <svg class="layer2" viewBox="0 0 2400 220" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M0,130 C180,90 360,160 540,130 C720,100 900,170 1080,130 C1260,90 1440,160 1620,130 C1800,100 1980,170 2160,130 C2280,108 2360,120 2400,130 L2400,220 L0,220 Z" fill="#5c5c5c"/>
+  </svg>
+  <svg class="layer3" viewBox="0 0 2400 220" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M0,150 C200,120 400,180 600,150 C800,120 1000,180 1200,150 C1400,120 1600,180 1800,150 C2000,120 2200,180 2400,150 L2400,220 L0,220 Z" fill="#2a2a2a"/>
+  </svg>
+</div>
+
+<header class="nav">
+  <div class="nav-inner">
+    <div class="logo" onclick="go('landing')"><span class="dot"></span>Sentry AI</div>
+    <nav class="links" id="navlinks">
+      <button class="navlink" onclick="go('docs')">Docs</button>
+      <button class="navlink" onclick="scrollToId('how-it-works')">How it works</button>
+      <button class="navlink" onclick="go('signin')">Sign in</button>
+    </nav>
+    <div class="nav-cta">
+      <button class="btn btn-ghost" onclick="go('signin')" style="display:none" id="desktopSignin">Sign in</button>
+      <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" title="Switch theme">
+        <svg class="theme-icon-dark" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 12.5A8.5 8.5 0 1 1 11.5 3 7 7 0 0 0 21 12.5z"/></svg>
+        <svg class="theme-icon-light" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2.5M12 19.5V22M4.2 4.2l1.8 1.8M18 18l1.8 1.8M2 12h2.5M19.5 12H22M4.2 19.8l1.8-1.8M18 6l1.8-1.8"/></svg>
+      </button>
+      <button class="btn btn-solid" onclick="go('signup')">Get API key</button>
+      <button class="navburger" onclick="toggleNav()">&#9776;</button>
+    </div>
+  </div>
+</header>
+
+<!-- ===================== LANDING VIEW ===================== -->
+<div class="view active" id="view-landing">
+
+  <section class="hero">
+    <div class="wrap hero-grid">
+      <div>
+        <div class="feature-chips">
+          <span class="chip">Streaming</span>
+          <span class="chip">Function calling</span>
+          <span class="chip">Structured output</span>
+          <span class="chip">1M context</span>
+          <span class="chip">Multimodal</span>
+          <span class="chip">Extended reasoning</span>
+          <span class="chip">Live web search</span>
+          <span class="chip highlight">All free</span>
+        </div>
+        <div class="eyebrow-line">v1 · OpenAI-compatible</div>
+        <div class="free-badge">✓ Free forever · No credit card · No trial clock</div>
+        <h1 class="headline">One API.<br>Every model.<br>Every feature.<br>For free.</h1>
+        <p class="sub">Sign up, generate a key, and call a single endpoint. Same request format, same response shape, every time.</p>
+        <div class="hero-ctas">
+          <button class="btn btn-solid" onclick="go('signup')">Get your API key</button>
+          <button class="btn btn-ghost" onclick="go('docs')">Read the docs</button>
+        </div>
+        <div class="hero-note">No card required · 3,000 requests/day free, permanently</div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <span class="panel-title">POST /v1/chat/completions</span>
+          <div class="panel-tabs">
+            <button class="tab-btn active" data-tab="curl" onclick="switchTab('curl')">cURL</button>
+            <button class="tab-btn" data-tab="python" onclick="switchTab('python')">Python</button>
+          </div>
+        </div>
+
+        <div class="tab-pane active" data-pane="curl">
+          <pre class="code"><span class="p">curl https://api.sentryai.ai/v1/chat/completions \</span>
+  <span class="p">-H</span> <span class="s">"Authorization: Bearer $SENTRY_KEY"</span> \
+  <span class="p">-H</span> <span class="s">"Content-Type: application/json"</span> \
+  <span class="p">-d</span> <span class="s">'{</span>
+<span class="s">    "model": "sentry-1",</span>
+<span class="s">    "messages": [</span>
+<span class="s">      {"role": "user", "content": "explain tail call optimization"}</span>
+<span class="s">    ],</span>
+<span class="s">    "stream": true</span>
+<span class="s">  }'</span></pre>
+        </div>
+
+        <div class="tab-pane" data-pane="python">
+          <pre class="code"><span class="k">import</span> requests
+
+response = requests.post(
+    <span class="s">"https://api.sentryai.ai/v1/chat/completions"</span>,
+    headers={
+        <span class="s">"Authorization"</span>: <span class="s">f"Bearer {SENTRY_KEY}"</span>,
+        <span class="s">"Content-Type"</span>: <span class="s">"application/json"</span>,
+    },
+    json={
+        <span class="s">"model"</span>: <span class="s">"sentry-1"</span>,
+        <span class="s">"messages"</span>: [
+            {<span class="s">"role"</span>: <span class="s">"user"</span>, <span class="s">"content"</span>: <span class="s">"explain tail call optimization"</span>}
+        ],
+        <span class="s">"stream"</span>: <span class="k">True</span>,
+    },
+    stream=<span class="k">True</span>,
+)
+
+<span class="k">for</span> line <span class="k">in</span> response.iter_lines():
+    <span class="k">if</span> line:
+        <span class="k">print</span>(line.decode())</pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="trust-bar">
+    <div class="wrap">
+      <div class="trust-item"><strong>3,000</strong>free requests / day</div>
+      <div class="trust-item"><strong>0</strong>cards on file to start</div>
+      <div class="trust-item"><strong>1M</strong>token context window</div>
+      <div class="trust-item"><strong>100%</strong>every feature, every key</div>
+      <div class="trust-item stat-highlight"><strong id="stat-users">—</strong>developers signed up</div>
+      <div class="trust-item stat-highlight"><strong id="stat-keys">—</strong>API keys generated</div>
+    </div>
+  </div>
+
+  <section id="what-you-get">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="section-kicker">included on every key</div>
+        <h2 class="section-title">What every key gets</h2>
+        <p class="section-desc">There are no feature gates. Every key gets the full capability set, with the same generous daily request cap for everyone.</p>
+      </div>
+      <div class="feature-list">
+        <div class="feature-item"><div class="feature-item-inner"><div class="feature-name">Full sampling control</div><div class="feature-desc">Temperature, top_p, max_tokens, stop sequences, seed, and penalties on every request.</div></div></div>
+        <div class="feature-item"><div class="feature-item-inner"><div class="feature-name">Streaming</div><div class="feature-desc">Token-by-token responses over server-sent events, same as you're used to.</div></div></div>
+        <div class="feature-item"><div class="feature-item-inner"><div class="feature-name">Structured output</div><div class="feature-desc">JSON mode with schema enforcement for reliable, parseable responses.</div></div></div>
+        <div class="feature-item"><div class="feature-item-inner"><div class="feature-name">1M token context</div><div class="feature-desc">Up to a million tokens of context on every request.</div></div></div>
+        <div class="feature-item"><div class="feature-item-inner"><div class="feature-name">Function calling</div><div class="feature-desc">Tool definitions and tool-use responses, fully OpenAI-compatible.</div></div></div>
+        <div class="feature-item"><div class="feature-item-inner"><div class="feature-name">Multimodal input</div><div class="feature-desc">Image, audio, video, and file upload, supported directly in the messages array.</div></div></div>
+        <div class="feature-item"><div class="feature-item-inner"><div class="feature-name">Extended reasoning</div><div class="feature-desc">Longer, deliberate reasoning traces for problems that need them.</div></div></div>
+        <div class="feature-item"><div class="feature-item-inner"><div class="feature-name">Live web search &amp; crawling</div><div class="feature-desc">Ground responses in live pages without leaving the API.</div></div></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="full-config">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="section-kicker">everything, initialized</div>
+        <h2 class="section-title">Every parameter, in one call</h2>
+        <p class="section-desc">A single request showing every initializable option — sampling, streaming, structured output, function calling, multimodal input, extended reasoning, and live web search — all available on the same key.</p>
+      </div>
+      <div class="panel config-panel">
+        <div class="panel-head">
+          <span class="panel-title">full_configuration.py</span>
+          <div class="panel-dots"><span></span><span></span><span></span></div>
+        </div>
+        <pre class="code"><span class="k">import</span> requests
+
+response = requests.post(
+    <span class="s">"https://api.sentryai.ai/v1/chat/completions"</span>,
+    headers={
+        <span class="s">"Authorization"</span>: <span class="s">f"Bearer {SENTRY_KEY}"</span>,
+        <span class="s">"Content-Type"</span>: <span class="s">"application/json"</span>,
+    },
+    json={
+        <span class="s">"model"</span>: <span class="s">"sentry-1"</span>,
+        <span class="s">"messages"</span>: [
+            {<span class="s">"role"</span>: <span class="s">"system"</span>, <span class="s">"content"</span>: <span class="s">"You are a concise, accurate assistant."</span>},
+            {
+                <span class="s">"role"</span>: <span class="s">"user"</span>,
+                <span class="s">"content"</span>: [
+                    {<span class="s">"type"</span>: <span class="s">"text"</span>, <span class="s">"text"</span>: <span class="s">"Summarize this image and the linked report."</span>},
+                    {<span class="s">"type"</span>: <span class="s">"image_url"</span>, <span class="s">"image_url"</span>: {<span class="s">"url"</span>: <span class="s">"https://example.com/diagram.png"</span>}},
+                    {<span class="s">"type"</span>: <span class="s">"file_url"</span>, <span class="s">"file_url"</span>: {<span class="s">"url"</span>: <span class="s">"https://example.com/report.pdf"</span>}},
+                ],
+            },
+        ],
+
+        <span class="c"># --- sampling control ---</span>
+        <span class="s">"temperature"</span>: <span class="k">0.7</span>,
+        <span class="s">"top_p"</span>: <span class="k">1.0</span>,
+        <span class="s">"top_k"</span>: <span class="k">40</span>,
+        <span class="s">"max_tokens"</span>: <span class="k">2048</span>,
+        <span class="s">"stop"</span>: [<span class="s">"\n\nEND"</span>],
+        <span class="s">"seed"</span>: <span class="k">42</span>,
+        <span class="s">"presence_penalty"</span>: <span class="k">0.0</span>,
+        <span class="s">"frequency_penalty"</span>: <span class="k">0.0</span>,
+        <span class="s">"n"</span>: <span class="k">1</span>,
+
+        <span class="c"># --- streaming ---</span>
+        <span class="s">"stream"</span>: <span class="k">True</span>,
+
+        <span class="c"># --- structured output ---</span>
+        <span class="s">"response_format"</span>: {
+            <span class="s">"type"</span>: <span class="s">"json_schema"</span>,
+            <span class="s">"json_schema"</span>: {
+                <span class="s">"name"</span>: <span class="s">"summary"</span>,
+                <span class="s">"schema"</span>: {
+                    <span class="s">"type"</span>: <span class="s">"object"</span>,
+                    <span class="s">"properties"</span>: {
+                        <span class="s">"summary"</span>: {<span class="s">"type"</span>: <span class="s">"string"</span>},
+                        <span class="s">"key_points"</span>: {<span class="s">"type"</span>: <span class="s">"array"</span>, <span class="s">"items"</span>: {<span class="s">"type"</span>: <span class="s">"string"</span>}},
+                    },
+                    <span class="s">"required"</span>: [<span class="s">"summary"</span>, <span class="s">"key_points"</span>],
+                },
+            },
+        },
+
+        <span class="c"># --- function calling ---</span>
+        <span class="s">"tools"</span>: [
+            {
+                <span class="s">"type"</span>: <span class="s">"function"</span>,
+                <span class="s">"function"</span>: {
+                    <span class="s">"name"</span>: <span class="s">"get_weather"</span>,
+                    <span class="s">"description"</span>: <span class="s">"Get current weather for a location"</span>,
+                    <span class="s">"parameters"</span>: {
+                        <span class="s">"type"</span>: <span class="s">"object"</span>,
+                        <span class="s">"properties"</span>: {<span class="s">"location"</span>: {<span class="s">"type"</span>: <span class="s">"string"</span>}},
+                        <span class="s">"required"</span>: [<span class="s">"location"</span>],
+                    },
+                },
+            }
+        ],
+        <span class="s">"tool_choice"</span>: <span class="s">"auto"</span>,
+
+        <span class="c"># --- extended reasoning ---</span>
+        <span class="s">"reasoning"</span>: {<span class="s">"enabled"</span>: <span class="k">True</span>, <span class="s">"effort"</span>: <span class="s">"high"</span>},
+
+        <span class="c"># --- live web search & crawling ---</span>
+        <span class="s">"web_search"</span>: {<span class="s">"enabled"</span>: <span class="k">True</span>, <span class="s">"max_results"</span>: <span class="k">5</span>},
+
+        <span class="c"># --- context window ---</span>
+        <span class="s">"context_window"</span>: <span class="k">1000000</span>,
+    },
+    stream=<span class="k">True</span>,
+)
+
+<span class="k">for</span> line <span class="k">in</span> response.iter_lines():
+    <span class="k">if</span> line:
+        <span class="k">print</span>(line.decode())</pre>
+      </div>
+    </div>
+  </section>
+
+  <section id="free-forever">
+    <div class="wrap free-block">
+      <div>
+        <div class="section-kicker">pricing philosophy</div>
+        <h2 class="section-title">Free, permanently</h2>
+        <p class="section-desc">Free isn't a trial. It's the only plan. 3,000 requests a day, every day, with no expiration and no card on file — the full feature set, for everyone, forever.</p>
+      </div>
+      <div class="free-figure">
+        <div class="free-row"><span class="k">Requests / day</span><span class="v">3,000</span></div>
+        <div class="free-row"><span class="k">Max input / request</span><span class="v">8K tokens</span></div>
+        <div class="free-row"><span class="k">Streaming</span><span class="v on">included</span></div>
+        <div class="free-row"><span class="k">Function calling</span><span class="v on">included</span></div>
+        <div class="free-row"><span class="k">Multimodal input</span><span class="v on">included</span></div>
+        <div class="free-row"><span class="k">Card required</span><span class="v">no</span></div>
+        <div class="free-row"><span class="k">Expiration</span><span class="v">none</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="how-it-works">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="section-kicker">getting started</div>
+        <h2 class="section-title">How it works</h2>
+        <p class="section-desc">Two steps between signing up and your first response.</p>
+      </div>
+      <div class="steps">
+        <div class="step">
+          <div class="step-index">01</div>
+          <div>
+            <div class="step-title">Generate a key</div>
+            <div class="step-desc">Create an account and get an API key immediately — no card, no waiting period.</div>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-index">02</div>
+          <div>
+            <div class="step-title">Send a request</div>
+            <div class="step-desc">Call the OpenAI-compatible endpoint with your key and get a response back in the same shape every time.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="faq">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="section-kicker">questions</div>
+        <h2 class="section-title">Before you ask "what's the catch"</h2>
+      </div>
+      <div class="faq-list">
+        <div class="faq-item">
+          <div class="faq-q">Is the free plan actually free, permanently?</div>
+          <div class="faq-a">Yes. 3,000 requests a day, every day, indefinitely. It's not a trial and it doesn't expire — there's no countdown waiting to convert you.</div>
+        </div>
+        <div class="faq-item">
+          <div class="faq-q">Do I need a credit card to sign up?</div>
+          <div class="faq-a">No. Create an account with just an email and you have a working key immediately.</div>
+        </div>
+        <div class="faq-item">
+          <div class="faq-q">Are any features locked away?</div>
+          <div class="faq-a">No. Streaming, function calling, structured output, multimodal input, extended reasoning, and live web search are all available on every key, with no upsell in the way.</div>
+        </div>
+        <div class="faq-item">
+          <div class="faq-q">Will I get rate-limited without warning?</div>
+          <div class="faq-a">No. Every response includes rate-limit headers so you can see your remaining quota before you hit it.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<!-- ===================== SIGNUP VIEW (progressive, 2 stages) ===================== -->
+<div class="view" id="view-signup">
+  <div class="auth-wrap">
+    <div class="auth-card">
+      <div class="auth-steps">
+        <div class="dash active" id="su-dash-1"><i></i></div>
+        <div class="dash" id="su-dash-2"><i></i></div>
+      </div>
+
+      <div class="backend-warn" id="su-backend-warn">No backend is connected yet, so accounts aren't real. Host the backend and set <code>window.API_BASE</code> to enable sign-up.</div>
+
+      <!-- Stage 1: email -->
+      <div class="auth-stage active" id="su-stage-1">
+        <h2>Create your key</h2>
+        <div class="auth-sub">3,000 requests/day, free, no card required.</div>
+        <div class="field">
+          <label>Email</label>
+          <input type="email" id="su-email" placeholder="you@company.com" autocomplete="email">
+          <div class="field-error" id="su-email-error">Enter a valid email address.</div>
+        </div>
+        <button class="btn btn-solid auth-submit" onclick="signupNext()">Continue</button>
+        <div class="auth-switch">Already have a key? <button onclick="go('signin')">Sign in</button></div>
+      </div>
+
+      <!-- Stage 2: password -->
+      <div class="auth-stage" id="su-stage-2">
+        <button class="auth-back" onclick="signupBack()">&larr; back</button>
+        <h2>Set a password</h2>
+        <div class="stage-context" id="su-email-display"></div>
+
+        <div class="field">
+          <label>Password</label>
+          <div class="pw-field">
+            <input type="password" id="su-password" placeholder="••••••••" autocomplete="new-password" oninput="checkSignupPassword()">
+            <button type="button" class="pw-eye" onclick="toggleEye('su-password', this)">
+              <svg class="eye-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>
+              <svg class="eye-closed" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" style="display:none"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a19.4 19.4 0 0 1 5.06-5.94M9.9 4.24A9.5 9.5 0 0 1 12 4c7 0 11 8 11 8a19.4 19.4 0 0 1-3.14 4.34M14.12 14.12a3 3 0 1 1-4.24-4.24"/><path d="M1 1l22 22"/></svg>
+            </button>
+          </div>
+          <ul class="pw-requirements" id="su-requirements">
+            <li id="req-length"><span class="mark"></span>8+ characters</li>
+            <li id="req-letter"><span class="mark"></span>A letter</li>
+            <li id="req-number"><span class="mark"></span>A number</li>
+            <li id="req-symbol"><span class="mark"></span>A symbol</li>
+          </ul>
+        </div>
+
+        <div class="field">
+          <label>Confirm password</label>
+          <div class="pw-field">
+            <input type="password" id="su-password-confirm" placeholder="••••••••" autocomplete="new-password" oninput="checkSignupPassword()">
+            <button type="button" class="pw-eye" onclick="toggleEye('su-password-confirm', this)">
+              <svg class="eye-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>
+              <svg class="eye-closed" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" style="display:none"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a19.4 19.4 0 0 1 5.06-5.94M9.9 4.24A9.5 9.5 0 0 1 12 4c7 0 11 8 11 8a19.4 19.4 0 0 1-3.14 4.34M14.12 14.12a3 3 0 1 1-4.24-4.24"/><path d="M1 1l22 22"/></svg>
+            </button>
+          </div>
+          <div class="pw-match" id="su-match"></div>
+        </div>
+
+        <button class="btn btn-solid auth-submit" id="su-submit" onclick="signupSubmit()" disabled>Create account</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== SIGNIN VIEW (progressive, 2 stages) ===================== -->
+<div class="view" id="view-signin">
+  <div class="auth-wrap">
+    <div class="auth-card">
+      <div class="auth-steps">
+        <div class="dash active" id="si-dash-1"><i></i></div>
+        <div class="dash" id="si-dash-2"><i></i></div>
+      </div>
+
+      <div class="backend-warn" id="si-backend-warn">No backend is connected yet, so there's nothing to sign in to. Host the backend and set <code>window.API_BASE</code> first.</div>
+
+      <!-- Stage 1: email -->
+      <div class="auth-stage active" id="si-stage-1">
+        <h2>Sign in</h2>
+        <div class="auth-sub">Access your console.</div>
+        <div class="field">
+          <label>Email</label>
+          <input type="email" id="si-email" placeholder="you@company.com" autocomplete="email">
+          <div class="field-error" id="si-email-error">Enter a valid email address.</div>
+        </div>
+        <button class="btn btn-solid auth-submit" onclick="signinNext()">Continue</button>
+        <div class="auth-switch">Don't have a key yet? <button onclick="go('signup')">Sign up</button></div>
+      </div>
+
+      <!-- Stage 2: password -->
+      <div class="auth-stage" id="si-stage-2">
+        <button class="auth-back" onclick="signinBack()">&larr; back</button>
+        <h2>Enter your password</h2>
+        <div class="stage-context" id="si-email-display"></div>
+
+        <div class="field">
+          <label>Password</label>
+          <div class="pw-field">
+            <input type="password" id="si-password" placeholder="••••••••" autocomplete="current-password">
+            <button type="button" class="pw-eye" onclick="toggleEye('si-password', this)">
+              <svg class="eye-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>
+              <svg class="eye-closed" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" style="display:none"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a19.4 19.4 0 0 1 5.06-5.94M9.9 4.24A9.5 9.5 0 0 1 12 4c7 0 11 8 11 8a19.4 19.4 0 0 1-3.14 4.34M14.12 14.12a3 3 0 1 1-4.24-4.24"/><path d="M1 1l22 22"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <button class="btn btn-solid auth-submit" onclick="signinSubmit()">Sign in</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== CONSOLE VIEW (post sign-in/sign-up landing) ===================== -->
+<div class="view" id="view-console">
+  <div class="page-wrap" style="padding-top:44px;">
+    <div class="console-shell">
+
+      <aside class="console-sidebar">
+        <div class="cs-user">
+          <div class="cs-email" id="cs-email">you@example.com</div>
+          <div class="cs-plan">Free plan · 3,000 req/day</div>
+        </div>
+        <button class="console-nav-btn active" data-pane="overview" onclick="consoleGo('overview')">Overview</button>
+        <button class="console-nav-btn" data-pane="playground" onclick="consoleGo('playground')">Playground</button>
+        <button class="console-nav-btn" data-pane="keys" onclick="consoleGo('keys')">API keys</button>
+        <button class="console-nav-btn" data-pane="usage" onclick="consoleGo('usage')">Usage</button>
+        <button class="console-nav-btn" data-pane="models" onclick="consoleGo('models')">Models</button>
+        <button class="console-nav-btn" data-pane="settings" onclick="consoleGo('settings')">Settings</button>
+        <button class="console-nav-btn" onclick="go('docs')">Docs ↗</button>
+      </aside>
+
+      <div class="console-main">
+
+        <!-- OVERVIEW -->
+        <div class="console-pane active" id="cpane-overview">
+          <div class="console-head">
+            <h1 id="cs-greeting">Welcome to Sentry AI</h1>
+            <p>Your account is live on the free plan — 3,000 requests a day, every feature enabled, no card on file.</p>
+          </div>
+
+          <div class="stat-grid">
+            <div class="stat-card">
+              <div class="stat-label">Requests today</div>
+              <div class="stat-value" id="ov-requests-today">0</div>
+              <div class="stat-sub">of 3,000 daily cap</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Active keys</div>
+              <div class="stat-value" id="ov-active-keys">0</div>
+              <div class="stat-sub">no card required, ever</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Plan</div>
+              <div class="stat-value" style="font-size:20px;">Free — forever</div>
+              <div class="stat-sub">upgrade path coming later</div>
+            </div>
+          </div>
+
+          <div class="console-section-title">Get started</div>
+          <div class="panel" style="margin-bottom:28px;">
+            <div class="panel-head">
+              <span class="panel-title">POST /v1/chat/completions</span>
+            </div>
+            <pre class="code" id="ov-snippet"><span class="p">curl https://api.sentryai.ai/v1/chat/completions \</span>
+  <span class="p">-H</span> <span class="s">"Authorization: Bearer sk-sentry-••••••••••••"</span> \
+  <span class="p">-H</span> <span class="s">"Content-Type: application/json"</span> \
+  <span class="p">-d</span> <span class="s">'{"model":"sentry-1","messages":[{"role":"user","content":"hello"}]}'</span></pre>
+          </div>
+          <button class="btn btn-solid" onclick="consoleGo('keys')" id="ov-cta">Create your first API key</button>
+        </div>
+
+        <!-- PLAYGROUND -->
+        <div class="console-pane" id="cpane-playground">
+          <div class="pg-shell">
+            <div class="pg-topbar">
+              <div class="pg-topbar-left">
+                <span class="pg-model-pill">
+                  <span class="pg-model-dot"></span> sentry-1
+                </span>
+              </div>
+              <div class="pg-topbar-right">
+                <button class="pg-chip" id="pg-search-chip" onclick="pgToggleChip('pg-search-chip')" title="Live web search">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+                  Web search
+                </button>
+                <button class="pg-chip" id="pg-json-chip" onclick="pgToggleChip('pg-json-chip')" title="Structured JSON output">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 3H6a2 2 0 0 0-2 2v3a2 2 0 0 1-2 2 2 2 0 0 1 2 2v3a2 2 0 0 0 2 2h2"/><path d="M16 3h2a2 2 0 0 1 2 2v3a2 2 0 0 0 2 2 2 2 0 0 0-2 2v3a2 2 0 0 1-2 2h-2"/></svg>
+                  JSON mode
+                </button>
+                <div class="pg-segmented" id="pg-effort-group">
+                  <button class="pg-seg-btn" data-val="low" onclick="pgSetEffort('low')">Low</button>
+                  <button class="pg-seg-btn active" data-val="medium" onclick="pgSetEffort('medium')">Medium</button>
+                  <button class="pg-seg-btn" data-val="high" onclick="pgSetEffort('high')">High</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="pg-chat" id="pg-chat">
+              <div class="pg-row pg-row-assistant">
+                <div class="pg-avatar pg-avatar-assistant">S</div>
+                <div class="pg-bubble pg-bubble-assistant">Ask me anything, toggle live web search for current events, or attach an image, document, video, or voice note below — every feature on the Models page is testable right here.</div>
+              </div>
+            </div>
+
+            <div class="pg-attachments" id="pg-attachments"></div>
+
+            <div class="pg-composer">
+              <div class="pg-attach-wrap">
+                <button class="pg-attach-btn" id="pg-attach-btn" onclick="pgToggleAttachMenu(event)" title="Attach">
+                  <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M5 12h14"/></svg>
+                </button>
+                <div class="pg-attach-menu" id="pg-attach-menu">
+                  <button onclick="pgPickFile('image')"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg> Image</button>
+                  <button onclick="pgPickFile('document')"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg> Document</button>
+                  <button onclick="pgPickFile('video')"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M16 10l6-3v10l-6-3z"/></svg> Video</button>
+                  <button onclick="pgPickFile('audio')"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4"/></svg> Upload audio</button>
+                  <button onclick="pgToggleRecording()" id="pg-record-btn"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><circle cx="12" cy="12" r="7"/></svg> <span id="pg-record-label">Record voice</span></button>
+                </div>
+                <input type="file" id="pg-file-image" accept="image/*" style="display:none;" onchange="pgFileChosen(event,'image')">
+                <input type="file" id="pg-file-document" accept=".pdf,.doc,.docx,.txt,.csv,.md" style="display:none;" onchange="pgFileChosen(event,'document')">
+                <input type="file" id="pg-file-video" accept="video/*" style="display:none;" onchange="pgFileChosen(event,'video')">
+                <input type="file" id="pg-file-audio" accept="audio/*" style="display:none;" onchange="pgFileChosen(event,'audio')">
+              </div>
+
+              <textarea id="pg-input" class="pg-textarea" placeholder="Message Sentry 1..." rows="1" oninput="pgAutoGrow(this)" onkeydown="pgHandleKeydown(event)"></textarea>
+
+              <button class="pg-send-btn" id="pg-send-btn" onclick="pgSend()" title="Send">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+              </button>
+            </div>
+            <div class="pg-hint">Enter to send · Shift+Enter for a new line</div>
+          </div>
+        </div>
+
+        <!-- API KEYS -->
+        <div class="console-pane" id="cpane-keys">
+          <div class="console-head">
+            <h1>API keys</h1>
+            <p>Keys authenticate your requests. The full key is only shown once, right after creation — store it somewhere safe. Accounts are limited to one API key at a time; revoke your existing key before creating a new one.</p>
+          </div>
+
+          <div class="console-section-title">
+            <span>Your keys</span>
+            <button class="btn btn-solid" style="padding:8px 16px;font-size:13px;" onclick="openKeyModal()" id="create-key-btn">+ Create key</button>
+          </div>
+
+          <div class="keys-empty" id="keys-empty">You haven't created a key yet. Create one to start calling the API — every feature, including live web search, is on by default.</div>
+          <table class="keys-table" id="keys-table" style="display:none;">
+            <thead>
+              <tr><th>Name</th><th>Key</th><th>Created</th><th>Last used</th><th></th></tr>
+            </thead>
+            <tbody id="keys-tbody"></tbody>
+          </table>
+        </div>
+
+        <!-- USAGE -->
+        <div class="console-pane" id="cpane-usage">
+          <div class="console-head">
+            <h1>Usage</h1>
+            <p>Requests are counted per calendar day against your free-tier cap and reset at midnight UTC.</p>
+          </div>
+
+          <div class="usage-meter-row">
+            <span>Today</span>
+            <span id="usage-meter-text">0 / 3,000 requests</span>
+          </div>
+          <div class="usage-meter"><i id="usage-meter-fill" style="width:0%;"></i></div>
+
+          <div class="console-section-title">Last 7 days</div>
+          <div class="usage-chart" id="usage-chart"></div>
+          <div class="usage-labels" id="usage-labels"></div>
+
+          <div class="console-section-title">Rate limit headers</div>
+          <div class="panel">
+            <pre class="code"><span class="p">X-RateLimit-Limit:</span> 3000
+<span class="p">X-RateLimit-Remaining:</span> <span id="usage-remaining">3000</span>
+<span class="p">X-RateLimit-Reset:</span> <span class="s">2026-09-10T00:00:00Z</span></pre>
+          </div>
+        </div>
+
+        <!-- MODELS -->
+        <div class="console-pane" id="cpane-models">
+          <div class="console-head">
+            <h1>Models</h1>
+            <p>Every model below carries the full feature set — streaming, tools, vision, extended reasoning, live web search — on the free plan, no separate unlocks. We're starting with Sentry 1; future generations will simply be stronger versions of the same model.</p>
+          </div>
+          <div class="model-grid">
+            <div class="model-card">
+              <div class="mc-top"><span class="mc-name">sentry-1</span><span class="mc-ctx">1M context</span></div>
+              <div class="mc-desc">Our flagship model, and for now our only one. Fully capable across every feature — chat, extended reasoning, and tool use.</div>
+              <div class="mc-tags"><span>streaming</span><span>tools</span><span>vision</span><span>extended reasoning</span><span>live web search</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- SETTINGS -->
+        <div class="console-pane" id="cpane-settings">
+          <div class="console-head">
+            <h1>Settings</h1>
+            <p>Manage your account details and credentials.</p>
+          </div>
+
+          <div class="console-section-title">Account</div>
+          <div class="settings-block">
+            <div class="field">
+              <label>Email</label>
+              <input type="email" id="settings-email" disabled>
+            </div>
+          </div>
+
+          <div class="console-section-title" style="margin-top:24px;">Change password</div>
+          <div class="settings-block">
+            <div class="field">
+              <label>New password</label>
+              <input type="password" id="settings-password" placeholder="••••••••">
+            </div>
+            <button class="btn btn-ghost" onclick="saveSettings()">Update password</button>
+            <div class="save-note" id="settings-save-note">Saved.</div>
+          </div>
+
+          <div class="danger-zone">
+            <div class="dz-title">Sign out</div>
+            <p>Signs you out of the console on this device. Your API key and usage history stay intact.</p>
+            <button class="btn btn-danger" onclick="signOutOfConsole()">Sign out</button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- key creation / reveal modal (global, outside views) -->
+<div class="modal-overlay" id="key-modal">
+  <div class="modal-box">
+    <div id="km-create-stage">
+      <h3>Name this key</h3>
+      <p>Give it a name that reminds you where it's used — e.g. "local dev" or "prod server". Accounts are limited to one key at a time.</p>
+      <div class="field">
+        <input type="text" id="km-name-input" placeholder="e.g. local dev">
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" onclick="closeKeyModal()">Cancel</button>
+        <button class="btn btn-solid" onclick="createKey()">Create key</button>
+      </div>
+    </div>
+    <div id="km-reveal-stage" style="display:none;">
+      <h3>Your new API key</h3>
+      <p>Copy it now — for your security, we won't show the full key again.</p>
+      <div class="key-reveal">
+        <span id="km-key-value">sk-sentry-...</span>
+        <button onclick="copyKey()" id="km-copy-btn">copy</button>
+      </div>
+      <p style="font-size:13px;color:var(--ink-dim);line-height:1.5;">Every feature — streaming, tools, vision, extended reasoning, and live web search — is already switched on for this key by default. Nothing extra to enable.</p>
+
+      <div class="panel" style="margin-bottom:14px;">
+        <div class="panel-head">
+          <span class="panel-title">Ready to run</span>
+          <div class="panel-tabs">
+            <button class="km-tab-btn active" data-kmtab="curl" onclick="switchKeyTab('curl')">cURL</button>
+            <button class="km-tab-btn" data-kmtab="python" onclick="switchKeyTab('python')">Python</button>
+          </div>
+        </div>
+        <div class="km-tab-pane active" data-kmpane="curl">
+          <pre class="code" id="km-snippet-curl"></pre>
+        </div>
+        <div class="km-tab-pane" data-kmpane="python">
+          <pre class="code" id="km-snippet-python"></pre>
+        </div>
+      </div>
+      <button class="btn btn-ghost" onclick="copySnippet()" id="km-snippet-copy" style="width:100%;margin-bottom:14px;">copy code</button>
+
+      <div class="modal-actions">
+        <button class="btn btn-solid" onclick="closeKeyModal()">Done</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== DOCS VIEW ===================== -->
+<div class="view" id="view-docs">
+  <div class="page-wrap">
+    <div class="page-head">
+      <button class="btn btn-ghost" onclick="goBack()" style="margin-bottom:18px;">← Back</button>
+      <div class="page-kicker">documentation</div>
+      <h1 class="page-title">Docs</h1>
+      <p class="page-desc">Everything you need to send your first request.</p>
+    </div>
+    <div class="docs-body">
+      <h3>Quickstart</h3>
+      <p>Create a key from your console, then send a request to <code>/v1/chat/completions</code> with an <code>Authorization: Bearer</code> header. The endpoint is OpenAI-compatible, so existing SDKs and client libraries work without modification — just change the base URL and key.</p>
+      <h3>Authentication</h3>
+      <p>Every request must include your API key as a bearer token: <code>Authorization: Bearer sk-sentry-...</code>. Keys can be named, listed, and revoked independently from your console. Revoking a key takes effect immediately.</p>
+      <h3>Endpoints</h3>
+      <p><code>POST /v1/chat/completions</code> — send messages, get a completion or a stream.<br>
+      <code>GET /v1/models</code> — list available model identifiers.</p>
+      <h3>Rate limits</h3>
+      <p>Every response includes <code>X-RateLimit-Limit</code>, <code>X-RateLimit-Remaining</code>, and <code>X-RateLimit-Reset</code> headers so you can track usage against your daily cap in real time. Exceeding the cap returns a <code>429</code> with a <code>Retry-After</code> header.</p>
+      <h3>Streaming</h3>
+      <p>Set <code>"stream": true</code> to receive the response as server-sent events. Each event contains a partial delta; the stream ends with a <code>data: [DONE]</code> line.</p>
+      <h3>Structured output</h3>
+      <p>Pass a <code>response_format</code> of type <code>json_schema</code> to constrain output to a schema. Responses that don't validate are automatically retried once server-side before being returned.</p>
+      <h3>Function calling</h3>
+      <p>Define functions under <code>tools</code> and set <code>tool_choice</code> to <code>auto</code>, <code>required</code>, or a specific function name. The model returns a <code>tool_calls</code> array instead of plain text when it decides to call one.</p>
+      <h3>Multimodal input</h3>
+      <p>Attach image, audio, video, or file content directly in the messages array alongside your text, using <code>image_url</code> or <code>file_url</code> content blocks.</p>
+      <h3>Extended reasoning</h3>
+      <p>Set <code>reasoning.enabled</code> to <code>true</code> and choose an <code>effort</code> of <code>low</code>, <code>medium</code>, or <code>high</code> for problems that benefit from longer deliberation before answering.</p>
+      <h3>Live web search</h3>
+      <p>Set <code>web_search.enabled</code> to <code>true</code> to let a request ground its answer in live pages, with <code>max_results</code> controlling how many sources are consulted.</p>
+      <h3>Errors</h3>
+      <p>Errors follow <code>{"error": {"type": "...", "message": "..."}}</code>. Common types: <code>invalid_request</code>, <code>authentication_error</code>, <code>rate_limit_exceeded</code>, <code>server_error</code>.</p>
+      <h3>SDKs</h3>
+      <p>No dedicated SDK needed — point any OpenAI-compatible client at <code>https://api.sentryai.ai/v1</code> and swap in your Sentry key.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== CHANGELOG VIEW ===================== -->
+<div class="view" id="view-changelog">
+  <div class="page-wrap">
+    <div class="page-head">
+      <div class="page-kicker">changelog</div>
+      <h1 class="page-title">What's new</h1>
+      <p class="page-desc">Notable changes to the API and platform.</p>
+    </div>
+    <div class="simple-list">
+      <div class="simple-entry">
+        <div class="se-top"><span class="se-date">2026-08-14</span><span class="se-title">Extended reasoning effort levels</span></div>
+        <div class="se-desc">Added low / medium / high effort controls to the reasoning parameter.</div>
+      </div>
+      <div class="simple-entry">
+        <div class="se-top"><span class="se-date">2026-07-20</span><span class="se-title">Rate-limit headers on every response</span></div>
+        <div class="se-desc">X-RateLimit-Limit, X-RateLimit-Remaining, and X-RateLimit-Reset now included on all responses, not just 429s.</div>
+      </div>
+      <div class="simple-entry">
+        <div class="se-top"><span class="se-date">2026-06-30</span><span class="se-title">1M token context window</span></div>
+        <div class="se-desc">Raised the default context window to 1M tokens.</div>
+      </div>
+      <div class="simple-entry">
+        <div class="se-top"><span class="se-date">2026-05-02</span><span class="se-title">Structured output (JSON schema)</span></div>
+        <div class="se-desc">Added schema-enforced JSON mode to the response_format parameter, with automatic server-side retry on validation failure.</div>
+      </div>
+      <div class="simple-entry">
+        <div class="se-top"><span class="se-date">2026-04-11</span><span class="se-title">Function calling</span></div>
+        <div class="se-desc">Added tools and tool_choice parameters with support for auto, required, and named function selection.</div>
+      </div>
+      <div class="simple-entry">
+        <div class="se-top"><span class="se-date">2026-03-11</span><span class="se-title">Public launch</span></div>
+        <div class="se-desc">Sentry AI opened sign-ups with the free, permanent 3,000 requests/day plan.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== STATUS VIEW ===================== -->
+<div class="view" id="view-status">
+  <div class="page-wrap">
+    <div class="page-head">
+      <div class="page-kicker">status</div>
+      <h1 class="page-title">System status</h1>
+      <p class="page-desc">Live status of the API and related services.</p>
+    </div>
+    <div class="simple-list">
+      <div class="status-row"><span>API — /v1/chat/completions</span><span class="status-dot">operational</span></div>
+      <div class="status-row"><span>Streaming (SSE)</span><span class="status-dot">operational</span></div>
+      <div class="status-row"><span>Function calling</span><span class="status-dot">operational</span></div>
+      <div class="status-row"><span>Extended reasoning</span><span class="status-dot">operational</span></div>
+      <div class="status-row"><span>Structured output</span><span class="status-dot">operational</span></div>
+      <div class="status-row"><span>Live web search &amp; crawling</span><span class="status-dot">operational</span></div>
+      <div class="status-row"><span>Dashboard</span><span class="status-dot">operational</span></div>
+      <div class="status-row"><span>Authentication</span><span class="status-dot">operational</span></div>
+    </div>
+    <div class="section-kicker" style="margin:32px 0 14px;">past incidents</div>
+    <div class="simple-list">
+      <div class="simple-entry">
+        <div class="se-top"><span class="se-date">2026-07-03</span><span class="se-title">Elevated error rates on streaming requests</span></div>
+        <div class="se-desc">14-minute window of intermittent 5xx errors on streamed responses. Resolved; no action needed from API users.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== TERMS VIEW ===================== -->
+<div class="view" id="view-terms">
+  <div class="page-wrap">
+    <div class="page-head">
+      <div class="page-kicker">legal</div>
+      <h1 class="page-title">Terms of service</h1>
+      <p class="page-desc">The short version of the agreement between you and Sentry AI.</p>
+    </div>
+    <div class="docs-body">
+      <h3>Your account</h3>
+      <p>You must provide a valid email to create an account and are responsible for keeping your password and API key confidential. You're responsible for all activity under your key.</p>
+      <h3>Using the API</h3>
+      <p>Your key is yours to use within the daily request cap on the free plan. Don't share keys publicly, embed them in client-side code, or resell access to them.</p>
+      <h3>The free plan</h3>
+      <p>The free plan has no expiration date and does not require payment information. We may introduce paid tiers with higher limits in the future; the free plan's cap and feature set won't be reduced for existing accounts without advance notice.</p>
+      <h3>Availability</h3>
+      <p>The API is provided on a best-effort basis, without uptime guarantees on the free plan. Availability can change without notice.</p>
+      <h3>Acceptable use</h3>
+      <p>You're responsible for what you send through the API and for complying with applicable usage policies. We may suspend keys used for abuse, security testing without permission, or generating unlawful content.</p>
+      <h3>Termination</h3>
+      <p>You can sign out of the console at any time. We may suspend or terminate accounts that violate these terms, with notice where practical.</p>
+      <h3>Changes to these terms</h3>
+      <p>We'll post updates here and, for material changes, notify the email on your account.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== PRIVACY VIEW ===================== -->
+<div class="view" id="view-privacy">
+  <div class="page-wrap">
+    <div class="page-head">
+      <div class="page-kicker">legal</div>
+      <h1 class="page-title">Privacy policy</h1>
+      <p class="page-desc">What we collect and how it's used.</p>
+    </div>
+    <div class="docs-body">
+      <h3>What we collect</h3>
+      <p>Account email and password (stored hashed, never in plain text), request metadata (timestamps, token counts, endpoint called), and anything you submit in a request body needed to serve that request.</p>
+      <h3>What we don't do</h3>
+      <p>We don't sell request content to third parties, and we don't use free-tier request content to train models without separate, explicit opt-in.</p>
+      <h3>How we use it</h3>
+      <p>To authenticate requests, enforce rate limits, serve your console usage stats, and diagnose errors. Nothing is used for advertising.</p>
+      <h3>Retention</h3>
+      <p>Request metadata used for rate-limit accounting is retained for 30 days.</p>
+      <h3>Third parties</h3>
+      <p>We share the minimum data needed with infrastructure providers that keep the API running (hosting, logging). None of them are permitted to use your data for their own purposes.</p>
+      <h3>Your choices</h3>
+      <p>You can export your account's usage data, sign out from the console, or contact us to correct inaccurate information, all from the console.</p>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <div class="wrap footer-grid">
+    <div class="footer-brand">
+      <div class="logo"><span class="dot"></span>Sentry AI</div>
+      <div class="footer-tag">One API for every model and every feature, free to start and free to stay.</div>
+    </div>
+    <div class="footer-col">
+      <div class="footer-col-title">PRODUCT</div>
+      <a onclick="go('docs')">Documentation</a>
+      <a onclick="go('landing');scrollToId('what-you-get')">Features</a>
+    </div>
+    <div class="footer-col">
+      <div class="footer-col-title">RESOURCES</div>
+      <a onclick="go('docs')">API reference</a>
+      <a onclick="go('docs')">Quickstart</a>
+      <a onclick="go('docs')">Guides</a>
+      <a onclick="go('changelog')">Changelog</a>
+      <a onclick="go('status')">Status</a>
+    </div>
+    <div class="footer-col">
+      <div class="footer-col-title">ACCOUNT</div>
+      <a onclick="go('signup')">Sign up</a>
+      <a onclick="go('signin')">Sign in</a>
+      <a onclick="go('terms')">Terms</a>
+      <a onclick="go('privacy')">Privacy</a>
+    </div>
+  </div>
+  <div class="wrap footer-bottom">
+    <span>© 2026 Sentry AI</span>
+    <span>api.sentryai.ai</span>
+  </div>
+</footer>
+
+<script>
+  /* ---------- theme ---------- */
+  (function initTheme(){
+    const saved = localStorage.getItem('sentry_theme');
+    if(saved === 'light'){ document.documentElement.setAttribute('data-theme', 'light'); }
+  })();
+  function toggleTheme(){
+    const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+    if(isLight){
+      document.documentElement.removeAttribute('data-theme');
+      localStorage.setItem('sentry_theme', 'dark');
+    } else {
+      document.documentElement.setAttribute('data-theme', 'light');
+      localStorage.setItem('sentry_theme', 'light');
+    }
+  }
+  let lastView = 'landing';
+  const FOOTER_HIDDEN_VIEWS = ['signup', 'signin', 'console'];
+  function go(viewName){
+    const current = document.querySelector('.view.active');
+    if(current){
+      const currentName = current.id.replace('view-', '');
+      if(currentName !== viewName){ lastView = currentName; }
+    }
+    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+    const target = document.getElementById('view-' + viewName);
+    if(target){ target.classList.add('active'); }
+    const footer = document.querySelector('footer');
+    if(footer){ footer.style.display = FOOTER_HIDDEN_VIEWS.includes(viewName) ? 'none' : ''; }
+    window.scrollTo({top:0, behavior:'instant' in window ? 'instant' : 'auto'});
+    document.getElementById('navlinks').classList.remove('open');
+  }
+  function goBack(){
+    go(lastView);
+  }
+  function scrollToId(id){
+    const el = document.getElementById(id);
+    if(el){ setTimeout(()=> el.scrollIntoView({behavior:'smooth'}), 50); }
+  }
+  function toggleNav(){
+    document.getElementById('navlinks').classList.toggle('open');
+  }
+  function switchTab(tab){
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+    document.querySelectorAll('.tab-pane').forEach(p => p.classList.toggle('active', p.dataset.pane === tab));
+  }
+
+  /* ---------- shared helpers ---------- */
+  function isValidEmail(v){
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+  }
+  function toggleEye(inputId, btn){
+    const input = document.getElementById(inputId);
+    const open = btn.querySelector('.eye-open');
+    const closed = btn.querySelector('.eye-closed');
+    const showing = input.type === 'text';
+    input.type = showing ? 'password' : 'text';
+    open.style.display = showing ? '' : 'none';
+    closed.style.display = showing ? 'none' : '';
+  }
+
+  /* ---------- signup flow ---------- */
+  function signupNext(){
+    const emailEl = document.getElementById('su-email');
+    const errEl = document.getElementById('su-email-error');
+    const email = emailEl.value.trim();
+    if(!isValidEmail(email)){
+      emailEl.classList.add('invalid');
+      errEl.classList.add('show');
+      return;
+    }
+    emailEl.classList.remove('invalid');
+    errEl.classList.remove('show');
+    document.getElementById('su-email-display').textContent = email;
+    document.getElementById('su-stage-1').classList.remove('active');
+    document.getElementById('su-stage-2').classList.add('active');
+    document.getElementById('su-dash-1').classList.add('done');
+    document.getElementById('su-dash-2').classList.add('active');
+  }
+  function signupBack(){
+    document.getElementById('su-stage-2').classList.remove('active');
+    document.getElementById('su-stage-1').classList.add('active');
+    document.getElementById('su-dash-1').classList.remove('done');
+    document.getElementById('su-dash-2').classList.remove('active');
+  }
+  function checkSignupPassword(){
+    const pw = document.getElementById('su-password').value;
+    const confirm = document.getElementById('su-password-confirm').value;
+
+    const checks = {
+      length: pw.length >= 8,
+      letter: /[a-zA-Z]/.test(pw),
+      number: /[0-9]/.test(pw),
+      symbol: /[^a-zA-Z0-9]/.test(pw),
+    };
+    setReq('req-length', checks.length);
+    setReq('req-letter', checks.letter);
+    setReq('req-number', checks.number);
+    setReq('req-symbol', checks.symbol);
+
+    const allMet = checks.length && checks.letter && checks.number && checks.symbol;
+
+    const matchEl = document.getElementById('su-match');
+    let matches = false;
+    if(confirm.length === 0){
+      matchEl.textContent = '';
+      matchEl.className = 'pw-match';
+    } else if(pw === confirm){
+      matchEl.textContent = 'Passwords match.';
+      matchEl.className = 'pw-match ok';
+      matches = true;
+    } else {
+      matchEl.textContent = "Passwords don't match yet.";
+      matchEl.className = 'pw-match bad';
+    }
+
+    document.getElementById('su-submit').disabled = !(allMet && matches);
+  }
+  function setReq(id, met){
+    const el = document.getElementById(id);
+    el.classList.toggle('met', met);
+  }
+  /* ---------- site-wide stats (landing hero) ---------- */
+  // Pulled from the real backend's GET /stats/public once window.API_BASE is
+  // set (e.g. in production, set via a small config.js on the Vercel deploy).
+  // Falls back to the numbers already in the HTML if no backend is configured
+  // or the request fails, so the static preview still looks right.
+  async function loadSiteStats(){
+    if(!window.API_BASE) return;
+    try {
+      const resp = await fetch(window.API_BASE + '/stats/public');
+      if(!resp.ok) return;
+      const data = await resp.json();
+      const usersEl = document.getElementById('stat-users');
+      const keysEl = document.getElementById('stat-keys');
+      if(usersEl && typeof data.users === 'number') usersEl.textContent = data.users.toLocaleString('en-US');
+      if(keysEl && typeof data.keys === 'number') keysEl.textContent = data.keys.toLocaleString('en-US');
+    } catch(e) {
+      // silent — keep the static fallback numbers already in the markup
+    }
+  }
+  loadSiteStats();
+  setInterval(loadSiteStats, 60000); // refresh every minute so the counter stays live
+
+  async function signupSubmit(){
+    const email = document.getElementById('su-email-display').textContent;
+    const password = document.getElementById('su-password').value;
+
+    if(!backendConnected()){
+      // No backend hosted yet — don't fake a signed-in state. Surface this
+      // clearly instead of silently dropping them into the console.
+      alert("No backend is connected yet, so this account wouldn't be real. Host the backend and set window.API_BASE first.");
+      return;
+    }
+    try {
+      const resp = await fetch(window.API_BASE + '/auth/signup', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({email, password}),
+      });
+      const data = await resp.json();
+      if(!resp.ok){
+        alert(data.error || 'Signup failed. That email may already be registered.');
+        return;
+      }
+      consoleState.sessionToken = data.token;
+      sessionStorage.setItem('sentry_session_token', data.token);
+      enterConsole(email);
+      await loadConsoleFromServer();
+    } catch(e) {
+      alert('Could not reach the server. Try again in a moment.');
+    }
+  }
+
+  /* ---------- signin flow ---------- */
+  function signinNext(){
+    const emailEl = document.getElementById('si-email');
+    const errEl = document.getElementById('si-email-error');
+    const email = emailEl.value.trim();
+    if(!isValidEmail(email)){
+      emailEl.classList.add('invalid');
+      errEl.classList.add('show');
+      return;
+    }
+    emailEl.classList.remove('invalid');
+    errEl.classList.remove('show');
+    document.getElementById('si-email-display').textContent = email;
+    document.getElementById('si-stage-1').classList.remove('active');
+    document.getElementById('si-stage-2').classList.add('active');
+    document.getElementById('si-dash-1').classList.add('done');
+    document.getElementById('si-dash-2').classList.add('active');
+  }
+  function signinBack(){
+    document.getElementById('si-stage-2').classList.remove('active');
+    document.getElementById('si-stage-1').classList.add('active');
+    document.getElementById('si-dash-1').classList.remove('done');
+    document.getElementById('si-dash-2').classList.remove('active');
+  }
+
+  async function signinSubmit(){
+    const email = document.getElementById('si-email-display').textContent;
+    const password = document.getElementById('si-password').value;
+
+    if(!backendConnected()){
+      // No backend hosted yet — don't fake a signed-in state.
+      alert("No backend is connected yet, so there's nothing to sign in to. Host the backend and set window.API_BASE first.");
+      return;
+    }
+    try {
+      const resp = await fetch(window.API_BASE + '/auth/signin', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({email, password}),
+      });
+      const data = await resp.json();
+      if(!resp.ok){
+        alert(data.error || 'Invalid email or password.');
+        return;
+      }
+      consoleState.sessionToken = data.token;
+      sessionStorage.setItem('sentry_session_token', data.token);
+      enterConsole(email);
+      await loadConsoleFromServer();
+    } catch(e) {
+      alert('Could not reach the server. Try again in a moment.');
+    }
+  }
+
+  /* True once a real backend is wired up (e.g. via a config.js setting
+     window.API_BASE on the deploy). Everything auth-related is gated on
+     this — no backend means no accounts, full stop. */
+  function backendConnected(){
+    return !!window.API_BASE;
+  }
+
+  /* reset auth forms whenever navigated to fresh, so stage state doesn't linger */
+  const _origGo = go;
+  go = function(viewName){
+    _origGo(viewName);
+    if(viewName === 'signup'){
+      document.getElementById('su-stage-2').classList.remove('active');
+      document.getElementById('su-stage-1').classList.add('active');
+      document.getElementById('su-dash-1').classList.remove('done');
+      document.getElementById('su-dash-2').classList.remove('active');
+      document.getElementById('su-backend-warn').classList.toggle('show', !backendConnected());
+    }
+    if(viewName === 'signin'){
+      document.getElementById('si-stage-2').classList.remove('active');
+      document.getElementById('si-stage-1').classList.add('active');
+      document.getElementById('si-dash-1').classList.remove('done');
+      document.getElementById('si-dash-2').classList.remove('active');
+      document.getElementById('si-backend-warn').classList.toggle('show', !backendConnected());
+    }
+  };
+
+  /* ---------- CONSOLE (internal app) ---------- */
+  const consoleState = {
+    email: 'you@example.com',
+    sessionToken: null,
+    keys: [],           // {id, name, prefix, created_at} from the server, or {..., full} right after creation
+    requestsToday: 0,
+    dailyCap: 3000,
+    usageHistory: [0, 0, 0, 0, 0, 0, 0], // real data comes from GET /console/usage; never fake numbers here
+  };
+  consoleState.sessionToken = sessionStorage.getItem('sentry_session_token') || null;
+
+  function authHeaders(){
+    return consoleState.sessionToken ? {'Authorization': 'Bearer ' + consoleState.sessionToken} : {};
+  }
+
+  function enterConsole(email){
+    consoleState.email = (email && email.trim()) ? email.trim() : 'you@example.com';
+    go('console');
+  }
+
+  async function loadConsoleFromServer(){
+    if(!window.API_BASE || !consoleState.sessionToken) return;
+    try {
+      const [keysResp, usageResp] = await Promise.all([
+        fetch(window.API_BASE + '/console/keys', {headers: authHeaders()}),
+        fetch(window.API_BASE + '/console/usage', {headers: authHeaders()}),
+      ]);
+      if(keysResp.ok){
+        const data = await keysResp.json();
+        consoleState.keys = data.keys || [];
+      }
+      if(usageResp.ok){
+        const data = await usageResp.json();
+        consoleState.requestsToday = data.requests_today || 0;
+        consoleState.dailyCap = data.daily_cap || consoleState.dailyCap;
+        consoleState.usageHistory = data.history || consoleState.usageHistory;
+      }
+    } catch(e) {
+      // network hiccup — keep whatever was last loaded rather than blanking the console
+    }
+    renderConsole();
+  }
+
+  function renderConsole(){
+    document.getElementById('cs-email').textContent = consoleState.email;
+    document.getElementById('settings-email').value = consoleState.email;
+    const firstName = consoleState.email.split('@')[0];
+    document.getElementById('cs-greeting').textContent = 'Welcome, ' + firstName;
+
+    document.getElementById('ov-requests-today').textContent = consoleState.requestsToday.toLocaleString();
+    document.getElementById('ov-active-keys').textContent = consoleState.keys.length;
+    document.getElementById('ov-cta').style.display = consoleState.keys.length ? 'none' : 'inline-block';
+
+    if(consoleState.keys.length){
+      const k = consoleState.keys[0];
+      document.getElementById('ov-snippet').innerHTML =
+        '<span class="p">curl https://api.sentryai.ai/v1/chat/completions \\</span>\n' +
+        '  <span class="p">-H</span> <span class="s">"Authorization: Bearer ' + k.prefix + '"</span> \\\n' +
+        '  <span class="p">-H</span> <span class="s">"Content-Type: application/json"</span> \\\n' +
+        '  <span class="p">-d</span> <span class="s">\'{"model":"sentry-1","messages":[{"role":"user","content":"hello"}]}\'</span>';
+    }
+
+    renderKeysTable();
+    renderUsage();
+  }
+
+  function renderKeysTable(){
+    const empty = document.getElementById('keys-empty');
+    const table = document.getElementById('keys-table');
+    const tbody = document.getElementById('keys-tbody');
+    const createBtn = document.getElementById('create-key-btn');
+    if(createBtn){
+      createBtn.disabled = consoleState.keys.length > 0;
+      createBtn.title = consoleState.keys.length ? 'Revoke your current key to create a new one' : '';
+    }
+    if(!consoleState.keys.length){
+      empty.style.display = 'block';
+      table.style.display = 'none';
+      return;
+    }
+    empty.style.display = 'none';
+    table.style.display = 'table';
+    tbody.innerHTML = consoleState.keys.map(k =>
+      '<tr>' +
+        '<td class="key-name">' + k.name + '</td>' +
+        '<td><code class="key-val">' + k.prefix + '</code></td>' +
+        '<td>' + (k.created_at ? new Date(k.created_at).toLocaleDateString() : 'just now') + '</td>' +
+        '<td>—</td>' +
+        '<td class="key-actions"><button onclick="revokeKey(' + k.id + ')">Revoke</button></td>' +
+      '</tr>'
+    ).join('');
+  }
+
+  function renderUsage(){
+    const pct = Math.min(100, Math.round((consoleState.requestsToday / consoleState.dailyCap) * 100));
+    document.getElementById('usage-meter-text').textContent = consoleState.requestsToday.toLocaleString() + ' / ' + consoleState.dailyCap.toLocaleString() + ' requests';
+    document.getElementById('usage-meter-fill').style.width = pct + '%';
+    document.getElementById('usage-remaining').textContent = Math.max(0, consoleState.dailyCap - consoleState.requestsToday).toLocaleString();
+
+    const history = consoleState.usageHistory.slice(0, -1).concat([consoleState.requestsToday]);
+    const max = Math.max(...history, 1);
+    const chart = document.getElementById('usage-chart');
+    chart.innerHTML = history.map(v =>
+      '<div class="usage-bar-wrap"><span class="usage-count">' + v.toLocaleString() + '</span>' +
+      '<div class="usage-bar" style="height:' + Math.max(4, Math.round((v/max)*130)) + 'px;"></div></div>'
+    ).join('');
+    const days = ['6d ago','5d ago','4d ago','3d ago','2d ago','yesterday','today'];
+    document.getElementById('usage-labels').innerHTML = days.map(d => '<span>' + d + '</span>').join('');
+  }
+
+  function consoleGo(pane){
+    document.querySelectorAll('.console-nav-btn').forEach(b => b.classList.toggle('active', b.dataset.pane === pane));
+    document.querySelectorAll('.console-pane').forEach(p => p.classList.toggle('active', p.id === 'cpane-' + pane));
+  }
+
+  /* ---------- Playground ---------- */
+  let pgAttachments = []; // {kind, name, file}
+  let pgEffort = 'medium';
+  let pgMediaRecorder = null;
+  let pgRecordedChunks = [];
+
+  function pgToggleChip(id){
+    document.getElementById(id).classList.toggle('on');
+  }
+
+  function pgSetEffort(val){
+    pgEffort = val;
+    document.querySelectorAll('#pg-effort-group .pg-seg-btn').forEach(b => b.classList.toggle('active', b.dataset.val === val));
+  }
+
+  function pgToggleAttachMenu(e){
+    e.stopPropagation();
+    document.getElementById('pg-attach-menu').classList.toggle('open');
+  }
+  document.addEventListener('click', () => document.getElementById('pg-attach-menu')?.classList.remove('open'));
+
+  function pgPickFile(kind){
+    document.getElementById('pg-attach-menu').classList.remove('open');
+    document.getElementById('pg-file-' + kind).click();
+  }
+
+  function pgFileChosen(e, kind){
+    const file = e.target.files[0];
+    if(!file) return;
+    pgAttachments.push({kind, name: file.name, file});
+    pgRenderAttachments();
+    e.target.value = '';
+    document.getElementById('pg-attach-menu').classList.remove('open');
+  }
+
+  function pgRemoveAttachment(idx){
+    pgAttachments.splice(idx, 1);
+    pgRenderAttachments();
+  }
+
+  const PG_KIND_ICON = {
+    image: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>',
+    document: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>',
+    video: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M16 10l6-3v10l-6-3z"/></svg>',
+    audio: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4"/></svg>',
+  };
+
+  function pgRenderAttachments(){
+    const wrap = document.getElementById('pg-attachments');
+    wrap.innerHTML = '';
+    pgAttachments.forEach((a, idx) => {
+      const chip = document.createElement('div');
+      chip.className = 'pg-attach-chip';
+      chip.innerHTML = `${PG_KIND_ICON[a.kind] || ''} <span>${a.name}</span> <button onclick="pgRemoveAttachment(${idx})">&times;</button>`;
+      wrap.appendChild(chip);
+    });
+  }
+
+  async function pgToggleRecording(){
+    const btn = document.getElementById('pg-record-btn');
+    const label = document.getElementById('pg-record-label');
+    if(pgMediaRecorder && pgMediaRecorder.state === 'recording'){
+      pgMediaRecorder.stop();
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+      pgRecordedChunks = [];
+      pgMediaRecorder = new MediaRecorder(stream);
+      pgMediaRecorder.ondataavailable = ev => pgRecordedChunks.push(ev.data);
+      pgMediaRecorder.onstop = () => {
+        const blob = new Blob(pgRecordedChunks, {type: 'audio/webm'});
+        const file = new File([blob], `voice-note-${Date.now()}.webm`, {type: 'audio/webm'});
+        pgAttachments.push({kind: 'audio', name: file.name, file});
+        pgRenderAttachments();
+        stream.getTracks().forEach(t => t.stop());
+        btn.classList.remove('recording');
+        label.textContent = 'Record voice';
+        document.getElementById('pg-attach-menu').classList.remove('open');
+      };
+      pgMediaRecorder.start();
+      btn.classList.add('recording');
+      label.textContent = 'Stop recording...';
+    } catch(e) {
+      pgAppendMessage('assistant', 'Microphone access was denied or unavailable in this browser.');
+      document.getElementById('pg-attach-menu').classList.remove('open');
+    }
+  }
+
+  function pgAutoGrow(el){
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+  }
+
+  function pgHandleKeydown(e){
+    if(e.key === 'Enter' && !e.shiftKey){
+      e.preventDefault();
+      pgSend();
+    }
+  }
+
+  function pgAppendMessage(role, text){
+    const chat = document.getElementById('pg-chat');
+    const row = document.createElement('div');
+    row.className = 'pg-row pg-row-' + role;
+    const avatar = document.createElement('div');
+    avatar.className = 'pg-avatar pg-avatar-' + role;
+    avatar.textContent = role === 'user' ? 'U' : 'S';
+    const bubble = document.createElement('div');
+    bubble.className = 'pg-bubble pg-bubble-' + role;
+    bubble.textContent = text;
+    row.appendChild(avatar);
+    row.appendChild(bubble);
+    chat.appendChild(row);
+    chat.scrollTop = chat.scrollHeight;
+    return bubble;
+  }
+
+  function pgAppendTyping(){
+    const chat = document.getElementById('pg-chat');
+    const row = document.createElement('div');
+    row.className = 'pg-row pg-row-assistant';
+    row.innerHTML = `<div class="pg-avatar pg-avatar-assistant">S</div><div class="pg-bubble pg-bubble-assistant"><span class="pg-typing"><span></span><span></span><span></span></span></div>`;
+    chat.appendChild(row);
+    chat.scrollTop = chat.scrollHeight;
+    return row;
+  }
+
+  // FIX: attachments were captured into pgAttachments and shown as chips in
+  // the UI, but pgSend() never actually included them in requestBody — they
+  // were silently dropped. Images are now base64-encoded and sent as
+  // OpenAI-style image_url content blocks, which the backend's Gemini adapter
+  // understands. Document/audio/video attachments still show in the UI but
+  // aren't wired to the backend yet — the adapter only translates images
+  // right now — so they're intentionally left out of the request rather than
+  // sent somewhere that silently ignores them.
+  function pgFileToDataURL(file){
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function pgSend(){
+    const input = document.getElementById('pg-input');
+    const text = input.value.trim();
+    if(!text && !pgAttachments.length) return;
+
+    const label = text || `[${pgAttachments.map(a => a.kind).join(', ')}]`;
+    pgAppendMessage('user', label);
+    input.value = '';
+    pgAutoGrow(input);
+
+    const searchOn = document.getElementById('pg-search-chip').classList.contains('on');
+    const jsonOn = document.getElementById('pg-json-chip').classList.contains('on');
+    const attachedNow = pgAttachments.slice();
+    pgAttachments = [];
+    pgRenderAttachments();
+
+    const sendBtn = document.getElementById('pg-send-btn');
+    sendBtn.disabled = true;
+    const typingRow = pgAppendTyping();
+
+    // Build message content: plain text if there are no image attachments,
+    // otherwise an OpenAI-style content array with text + image_url blocks.
+    const imageAttachments = attachedNow.filter(a => a.kind === 'image');
+    let messageContent = text;
+    if(imageAttachments.length){
+      const imageBlocks = await Promise.all(imageAttachments.map(async a => ({
+        type: 'image_url',
+        image_url: {url: await pgFileToDataURL(a.file)},
+      })));
+      messageContent = [{type: 'text', text: text || ''}, ...imageBlocks];
+    }
+
+    const requestBody = {
+      model: 'sentry-1',
+      messages: [{role: 'user', content: messageContent}],
+      web_search: {enabled: searchOn},
+      reasoning: {enabled: true, effort: pgEffort},
+      response_format: jsonOn ? {type: 'json_object'} : undefined,
+      stream: true,
+    };
+
+    // In a real deployment this calls window.API_BASE + '/v1/chat/completions'
+    // with the account's key attached server-side. This mockup simulates the
+    // reply locally since there's no backend wired into this static page.
+    if(window.API_BASE){
+      try {
+        const resp = await fetch(window.API_BASE + '/console/playground/chat', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json', ...authHeaders()},
+          body: JSON.stringify(requestBody),
+        });
+        const data = await resp.json();
+        typingRow.remove();
+        pgAppendMessage('assistant', data.choices?.[0]?.message?.content || '(no content)');
+      } catch(e) {
+        typingRow.remove();
+        pgAppendMessage('assistant', 'Request failed: ' + e.message);
+      }
+    } else {
+      setTimeout(() => {
+        typingRow.remove();
+        const parts = [];
+        if(attachedNow.length) parts.push(`(reading ${attachedNow.map(a => a.name).join(', ')}) `);
+        parts.push(jsonOn
+          ? '{"response": "This is a simulated JSON-mode reply — connect a backend at window.API_BASE to see real output."}'
+          : 'This is a simulated Playground reply — connect a backend at window.API_BASE to see real model output' + (searchOn ? ', including live search results' : '') + '.');
+        pgAppendMessage('assistant', parts.join(''));
+      }, searchOn ? 1000 : 600);
+    }
+    sendBtn.disabled = false;
+  }
+
+  let pendingKeyName = '';
+  function openKeyModal(){
+    if(consoleState.keys.length){
+      alert('Your account already has an API key. Revoke it before creating a new one — only one key is allowed per account.');
+      return;
+    }
+    document.getElementById('km-name-input').value = '';
+    document.getElementById('km-create-stage').style.display = 'block';
+    document.getElementById('km-reveal-stage').style.display = 'none';
+    document.getElementById('km-snippet-copy').textContent = 'copy code';
+    document.getElementById('key-modal').classList.add('active');
+  }
+  function closeKeyModal(){
+    document.getElementById('key-modal').classList.remove('active');
+    renderConsole();
+  }
+  async function createKey(){
+    if(consoleState.keys.length){
+      closeKeyModal();
+      return;
+    }
+    const nameInput = document.getElementById('km-name-input');
+    const name = nameInput.value.trim() || ('key-' + (consoleState.keys.length + 1));
+
+    // No local "simulate a key" fallback here on purpose — you can only reach
+    // the console with a real session (see signupSubmit/signinSubmit), so a
+    // real backend is guaranteed to be present by the time this runs.
+    try {
+      const resp = await fetch(window.API_BASE + '/console/keys', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', ...authHeaders()},
+        body: JSON.stringify({name}),
+      });
+      const data = await resp.json();
+      if(!resp.ok){
+        alert(data.error || 'Could not create a key.');
+        return;
+      }
+      document.getElementById('km-key-value').textContent = data.key;
+      updateKeySnippets(data.key);
+      switchKeyTab('curl');
+      document.getElementById('km-create-stage').style.display = 'none';
+      document.getElementById('km-reveal-stage').style.display = 'block';
+      document.getElementById('km-copy-btn').textContent = 'copy';
+      await loadConsoleFromServer();
+      loadSiteStats();
+    } catch(e) {
+      alert('Could not reach the server. Try again in a moment.');
+    }
+  }
+
+  /* ready-to-run code for the just-created key, shown next to the raw key
+     on the reveal stage so people can copy one block and go */
+  let kmSnippets = {curl: '', python: ''};
+  let kmActiveSnippetTab = 'curl';
+
+  function updateKeySnippets(key){
+    kmSnippets.curl =
+`curl https://api.sentryai.ai/v1/chat/completions \\
+  -H "Authorization: Bearer ${key}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"model": "sentry-1", "messages": [{"role": "user", "content": "hello"}]}'`;
+
+    kmSnippets.python =
+`import requests
+
+response = requests.post(
+    "https://api.sentryai.ai/v1/chat/completions",
+    headers={
+        "Authorization": "Bearer ${key}",
+        "Content-Type": "application/json",
+    },
+    json={
+        "model": "sentry-1",
+        "messages": [{"role": "user", "content": "hello"}],
+    },
+)
+
+print(response.json())`;
+
+    document.getElementById('km-snippet-curl').textContent = kmSnippets.curl;
+    document.getElementById('km-snippet-python').textContent = kmSnippets.python;
+  }
+
+  function switchKeyTab(tab){
+    kmActiveSnippetTab = tab;
+    document.querySelectorAll('.km-tab-btn').forEach(b => b.classList.toggle('active', b.dataset.kmtab === tab));
+    document.querySelectorAll('.km-tab-pane').forEach(p => p.classList.toggle('active', p.dataset.kmpane === tab));
+  }
+
+  function copySnippet(){
+    const val = kmSnippets[kmActiveSnippetTab] || '';
+    const btn = document.getElementById('km-snippet-copy');
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(val).then(() => {
+        btn.textContent = 'copied';
+        setTimeout(() => btn.textContent = 'copy code', 1500);
+      }).catch(() => { btn.textContent = 'select & copy'; });
+    }
+  }
+  function copyKey(){
+    const val = document.getElementById('km-key-value').textContent;
+    const btn = document.getElementById('km-copy-btn');
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(val).then(() => {
+        btn.textContent = 'copied';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      }).catch(() => { btn.textContent = 'select & copy'; });
+    }
+  }
+  async function revokeKey(id){
+    try {
+      await fetch(window.API_BASE + '/console/keys/' + id, {method: 'DELETE', headers: authHeaders()});
+      await loadConsoleFromServer();
+      loadSiteStats();
+    } catch(e) {
+      alert('Could not reach the server. Try again in a moment.');
+    }
+  }
+
+  async function saveSettings(){
+    const pwInput = document.getElementById('settings-password');
+    const password = pwInput.value;
+    const note = document.getElementById('settings-save-note');
+    if(!password) return;
+    if(password.length < 8){
+      alert('Password must be at least 8 characters.');
+      return;
+    }
+    try {
+      const resp = await fetch(window.API_BASE + '/console/password', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', ...authHeaders()},
+        body: JSON.stringify({password}),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if(!resp.ok){
+        alert(data.error || 'Could not update your password.');
+        return;
+      }
+      pwInput.value = '';
+      note.classList.add('show');
+      setTimeout(() => note.classList.remove('show'), 2200);
+    } catch(e) {
+      alert('Could not reach the server. Try again in a moment.');
+    }
+  }
+  function signOutOfConsole(){
+    if(confirm('Sign out of the console?')){
+      consoleState.sessionToken = null;
+      sessionStorage.removeItem('sentry_session_token');
+      go('landing');
+    }
+  }
+
+  /* render the console fresh whenever we navigate into it */
+  const _origGo2 = go;
+  go = function(viewName){
+    _origGo2(viewName);
+    if(viewName === 'console'){
+      consoleGo('overview');
+      renderConsole();
+      loadConsoleFromServer();
+    }
+  };
+</script>
+
+</body>
+</html>
