@@ -587,7 +587,7 @@ def run_agentic_completion(messages: list, web_search_enabled: bool = True):
 DAILY_REQUEST_CAP = int(os.environ.get("DAILY_REQUEST_CAP", "3000"))
 MAX_INPUT_TOKENS = int(os.environ.get("MAX_INPUT_TOKENS", "8000"))  # matches the public "8K tokens/request" figure
 # dummy/dev default — set FRONTEND_ORIGIN to the real Vercel URL in production
-FRONTEND_ORIGIN = https://fluidintelligence.vercel.app
+FRONTEND_ORIGIN = "https://fluidintelligence.vercel.app"
 
 
 def create_app():
