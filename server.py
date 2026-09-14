@@ -610,6 +610,9 @@ def create_app():
         email, password = data.get("email"), data.get("password")
         if not email or not password:
             return jsonify(error="email and password required"), 400
+        # normalize so "User@X.com" and "user@x.com " aren't treated as
+        # different accounts between signup and signin
+        email = email.strip().lower()
 
         password_hash = hash_password(password)
         try:
@@ -629,6 +632,9 @@ def create_app():
     def signin():
         data = request.get_json(force=True)
         email, password = data.get("email"), data.get("password")
+        if not email or not password:
+            return jsonify(error="email and password required"), 400
+        email = email.strip().lower()
         with get_cursor() as cur:
             cur.execute("SELECT id, password_hash FROM users WHERE email = %s", (email,))
             row = cur.fetchone()
@@ -872,4 +878,4 @@ def create_app():
 app = create_app()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000) 
+    app.run(host="0.0.0.0", port=5000)
