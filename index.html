@@ -979,28 +979,28 @@ response = requests.post(
       <div class="backend-warn" id="su-backend-warn">No backend is connected yet, so accounts aren't real. Host the backend and set <code>window.API_BASE</code> to enable sign-up.</div>
 
       <!-- Stage 1: email -->
-      <div class="auth-stage active" id="su-stage-1">
+      <form class="auth-stage active" id="su-stage-1" onsubmit="return signupNext(event)">
         <h2>Create your key</h2>
         <div class="auth-sub">3,000 requests/day, free, no card required.</div>
         <div class="field">
           <label>Email</label>
-          <input type="email" id="su-email" placeholder="you@company.com" autocomplete="email">
+          <input type="email" id="su-email" placeholder="you@company.com" autocomplete="email" required>
           <div class="field-error" id="su-email-error">Enter a valid email address.</div>
         </div>
-        <button class="btn btn-solid auth-submit" onclick="signupNext()">Continue</button>
-        <div class="auth-switch">Already have a key? <button onclick="go('signin')">Sign in</button></div>
-      </div>
+        <button type="submit" class="btn btn-solid auth-submit">Continue</button>
+        <div class="auth-switch">Already have a key? <button type="button" onclick="go('signin')">Sign in</button></div>
+      </form>
 
       <!-- Stage 2: password -->
-      <div class="auth-stage" id="su-stage-2">
-        <button class="auth-back" onclick="signupBack()">&larr; back</button>
+      <form class="auth-stage" id="su-stage-2" onsubmit="return signupSubmit(event)">
+        <button type="button" class="auth-back" onclick="signupBack()">&larr; back</button>
         <h2>Set a password</h2>
         <div class="stage-context" id="su-email-display"></div>
 
         <div class="field">
           <label>Password</label>
           <div class="pw-field">
-            <input type="password" id="su-password" placeholder="••••••••" autocomplete="new-password" oninput="checkSignupPassword()">
+            <input type="password" id="su-password" placeholder="••••••••" autocomplete="new-password" oninput="checkSignupPassword()" required>
             <button type="button" class="pw-eye" onclick="toggleEye('su-password', this)">
               <svg class="eye-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>
               <svg class="eye-closed" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" style="display:none"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a19.4 19.4 0 0 1 5.06-5.94M9.9 4.24A9.5 9.5 0 0 1 12 4c7 0 11 8 11 8a19.4 19.4 0 0 1-3.14 4.34M14.12 14.12a3 3 0 1 1-4.24-4.24"/><path d="M1 1l22 22"/></svg>
@@ -1017,7 +1017,7 @@ response = requests.post(
         <div class="field">
           <label>Confirm password</label>
           <div class="pw-field">
-            <input type="password" id="su-password-confirm" placeholder="••••••••" autocomplete="new-password" oninput="checkSignupPassword()">
+            <input type="password" id="su-password-confirm" placeholder="••••••••" autocomplete="new-password" oninput="checkSignupPassword()" required>
             <button type="button" class="pw-eye" onclick="toggleEye('su-password-confirm', this)">
               <svg class="eye-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>
               <svg class="eye-closed" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" style="display:none"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a19.4 19.4 0 0 1 5.06-5.94M9.9 4.24A9.5 9.5 0 0 1 12 4c7 0 11 8 11 8a19.4 19.4 0 0 1-3.14 4.34M14.12 14.12a3 3 0 1 1-4.24-4.24"/><path d="M1 1l22 22"/></svg>
@@ -1026,8 +1026,9 @@ response = requests.post(
           <div class="pw-match" id="su-match"></div>
         </div>
 
-        <button class="btn btn-solid auth-submit" id="su-submit" onclick="signupSubmit()" disabled>Create account</button>
-      </div>
+        <div class="field-error" id="su-form-error"></div>
+        <button type="submit" class="btn btn-solid auth-submit" id="su-submit" disabled>Create account</button>
+      </form>
     </div>
   </div>
 </div>
@@ -1042,30 +1043,31 @@ response = requests.post(
       </div>
 
       <div class="backend-warn" id="si-backend-warn">No backend is connected yet, so there's nothing to sign in to. Host the backend and set <code>window.API_BASE</code> first.</div>
+      <div class="backend-warn" id="si-session-msg"></div>
 
       <!-- Stage 1: email -->
-      <div class="auth-stage active" id="si-stage-1">
+      <form class="auth-stage active" id="si-stage-1" onsubmit="return signinNext(event)">
         <h2>Sign in</h2>
         <div class="auth-sub">Access your console.</div>
         <div class="field">
           <label>Email</label>
-          <input type="email" id="si-email" placeholder="you@company.com" autocomplete="email">
+          <input type="email" id="si-email" placeholder="you@company.com" autocomplete="email" required>
           <div class="field-error" id="si-email-error">Enter a valid email address.</div>
         </div>
-        <button class="btn btn-solid auth-submit" onclick="signinNext()">Continue</button>
-        <div class="auth-switch">Don't have a key yet? <button onclick="go('signup')">Sign up</button></div>
-      </div>
+        <button type="submit" class="btn btn-solid auth-submit">Continue</button>
+        <div class="auth-switch">Don't have a key yet? <button type="button" onclick="go('signup')">Sign up</button></div>
+      </form>
 
       <!-- Stage 2: password -->
-      <div class="auth-stage" id="si-stage-2">
-        <button class="auth-back" onclick="signinBack()">&larr; back</button>
+      <form class="auth-stage" id="si-stage-2" onsubmit="return signinSubmit(event)">
+        <button type="button" class="auth-back" onclick="signinBack()">&larr; back</button>
         <h2>Enter your password</h2>
         <div class="stage-context" id="si-email-display"></div>
 
         <div class="field">
           <label>Password</label>
           <div class="pw-field">
-            <input type="password" id="si-password" placeholder="••••••••" autocomplete="current-password">
+            <input type="password" id="si-password" placeholder="••••••••" autocomplete="current-password" required>
             <button type="button" class="pw-eye" onclick="toggleEye('si-password', this)">
               <svg class="eye-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>
               <svg class="eye-closed" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" style="display:none"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a19.4 19.4 0 0 1 5.06-5.94M9.9 4.24A9.5 9.5 0 0 1 12 4c7 0 11 8 11 8a19.4 19.4 0 0 1-3.14 4.34M14.12 14.12a3 3 0 1 1-4.24-4.24"/><path d="M1 1l22 22"/></svg>
@@ -1073,8 +1075,9 @@ response = requests.post(
           </div>
         </div>
 
-        <button class="btn btn-solid auth-submit" onclick="signinSubmit()">Sign in</button>
-      </div>
+        <div class="field-error" id="si-form-error"></div>
+        <button type="submit" class="btn btn-solid auth-submit" id="si-submit">Sign in</button>
+      </form>
     </div>
   </div>
 </div>
@@ -1599,14 +1602,15 @@ response = requests.post(
   }
 
   /* ---------- signup flow ---------- */
-  function signupNext(){
+  function signupNext(event){
+    if(event) event.preventDefault();
     const emailEl = document.getElementById('su-email');
     const errEl = document.getElementById('su-email-error');
     const email = emailEl.value.trim();
     if(!isValidEmail(email)){
       emailEl.classList.add('invalid');
       errEl.classList.add('show');
-      return;
+      return false;
     }
     emailEl.classList.remove('invalid');
     errEl.classList.remove('show');
@@ -1615,6 +1619,7 @@ response = requests.post(
     document.getElementById('su-stage-2').classList.add('active');
     document.getElementById('su-dash-1').classList.add('done');
     document.getElementById('su-dash-2').classList.add('active');
+    return false;
   }
   function signupBack(){
     document.getElementById('su-stage-2').classList.remove('active');
@@ -1681,45 +1686,86 @@ response = requests.post(
   loadSiteStats();
   setInterval(loadSiteStats, 60000); // refresh every minute so the counter stays live
 
-  async function signupSubmit(){
-    const email = document.getElementById('su-email-display').textContent;
-    const password = document.getElementById('su-password').value;
-
-    if(!backendConnected()){
-      // No backend hosted yet — don't fake a signed-in state. Surface this
-      // clearly instead of silently dropping them into the console.
-      alert("No backend is connected yet, so this account wouldn't be real. Host the backend and set window.API_BASE first.");
-      return;
-    }
+  /* ---------- shared auth request helper ----------
+     Single place that talks to /auth/*, so signup and signin don't each
+     carry their own copy of the same fetch/parse/error logic. Throws an
+     Error with a user-facing message on any failure; returns the parsed
+     body on success. */
+  async function postAuth(path, payload){
+    let resp;
     try {
-      const resp = await fetch(window.API_BASE + '/auth/signup', {
+      resp = await fetch(window.API_BASE + path, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({email, password}),
+        body: JSON.stringify(payload),
       });
-      const data = await resp.json();
-      if(!resp.ok){
-        alert(data.error || 'Signup failed. That email may already be registered.');
-        return;
-      }
+    } catch(e) {
+      throw new Error('Could not reach the server. Try again in a moment.');
+    }
+    let data = {};
+    try { data = await resp.json(); } catch(e) { /* empty/non-JSON body */ }
+    if(!resp.ok){
+      throw new Error(data.error || 'Something went wrong. Please try again.');
+    }
+    return data;
+  }
+
+  function showFormError(elId, message){
+    const el = document.getElementById(elId);
+    if(!el) return;
+    el.textContent = message;
+    el.classList.toggle('show', !!message);
+  }
+
+  /* True while a signup/signin request is in flight — guards against a
+     second click (double-click, slow cold-start backend, etc.) firing a
+     second request and a second error. */
+  let suSubmitting = false;
+  let siSubmitting = false;
+
+  async function signupSubmit(event){
+    if(event) event.preventDefault();
+    if(suSubmitting) return false;
+
+    const email = document.getElementById('su-email-display').textContent;
+    const password = document.getElementById('su-password').value;
+    showFormError('su-form-error', '');
+
+    if(!backendConnected()){
+      showFormError('su-form-error', "No backend is connected yet, so this account wouldn't be real. Host the backend and set window.API_BASE first.");
+      return false;
+    }
+
+    const btn = document.getElementById('su-submit');
+    suSubmitting = true;
+    btn.disabled = true;
+    btn.textContent = 'Creating account…';
+    try {
+      const data = await postAuth('/auth/signup', {email, password});
       consoleState.sessionToken = data.token;
       sessionStorage.setItem('sentry_session_token', data.token);
       enterConsole(email);
       await loadConsoleFromServer();
     } catch(e) {
-      alert('Could not reach the server. Try again in a moment.');
+      showFormError('su-form-error', e.message);
+    } finally {
+      suSubmitting = false;
+      btn.disabled = false;
+      btn.textContent = 'Create account';
     }
+    return false;
   }
 
   /* ---------- signin flow ---------- */
-  function signinNext(){
+  function signinNext(event){
+    if(event) event.preventDefault();
     const emailEl = document.getElementById('si-email');
     const errEl = document.getElementById('si-email-error');
     const email = emailEl.value.trim();
     if(!isValidEmail(email)){
       emailEl.classList.add('invalid');
       errEl.classList.add('show');
-      return;
+      return false;
     }
     emailEl.classList.remove('invalid');
     errEl.classList.remove('show');
@@ -1728,6 +1774,7 @@ response = requests.post(
     document.getElementById('si-stage-2').classList.add('active');
     document.getElementById('si-dash-1').classList.add('done');
     document.getElementById('si-dash-2').classList.add('active');
+    return false;
   }
   function signinBack(){
     document.getElementById('si-stage-2').classList.remove('active');
@@ -1736,33 +1783,37 @@ response = requests.post(
     document.getElementById('si-dash-2').classList.remove('active');
   }
 
-  async function signinSubmit(){
+  async function signinSubmit(event){
+    if(event) event.preventDefault();
+    if(siSubmitting) return false;
+
     const email = document.getElementById('si-email-display').textContent;
     const password = document.getElementById('si-password').value;
+    showFormError('si-form-error', '');
 
     if(!backendConnected()){
-      // No backend hosted yet — don't fake a signed-in state.
-      alert("No backend is connected yet, so there's nothing to sign in to. Host the backend and set window.API_BASE first.");
-      return;
+      showFormError('si-form-error', "No backend is connected yet, so there's nothing to sign in to. Host the backend and set window.API_BASE first.");
+      return false;
     }
+
+    const btn = document.getElementById('si-submit');
+    siSubmitting = true;
+    btn.disabled = true;
+    btn.textContent = 'Signing in…';
     try {
-      const resp = await fetch(window.API_BASE + '/auth/signin', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({email, password}),
-      });
-      const data = await resp.json();
-      if(!resp.ok){
-        alert(data.error || 'Invalid email or password.');
-        return;
-      }
+      const data = await postAuth('/auth/signin', {email, password});
       consoleState.sessionToken = data.token;
       sessionStorage.setItem('sentry_session_token', data.token);
       enterConsole(email);
       await loadConsoleFromServer();
     } catch(e) {
-      alert('Could not reach the server. Try again in a moment.');
+      showFormError('si-form-error', e.message);
+    } finally {
+      siSubmitting = false;
+      btn.disabled = false;
+      btn.textContent = 'Sign in';
     }
+    return false;
   }
 
   /* True once a real backend is wired up (e.g. via a config.js setting
@@ -1789,6 +1840,7 @@ response = requests.post(
       document.getElementById('si-dash-1').classList.remove('done');
       document.getElementById('si-dash-2').classList.remove('active');
       document.getElementById('si-backend-warn').classList.toggle('show', !backendConnected());
+      document.getElementById('si-session-msg').classList.remove('show');
     }
   };
 
@@ -1825,16 +1877,10 @@ response = requests.post(
       // authenticated action (like creating a key) failed with "unauthorized".
       // Catch it here instead and force a clean re-sign-in.
       if(keysResp.status === 401 || usageResp.status === 401){
-        let detail = '';
-        try {
-          const failed = keysResp.status === 401 ? keysResp : usageResp;
-          const bodyText = await failed.clone().text();
-          detail = `\n\n[debug] ${failed.url}\nstatus: ${failed.status}\nbody: ${bodyText}`;
-        } catch(_e) { /* ignore — show the alert without the extra detail */ }
         consoleState.sessionToken = null;
         sessionStorage.removeItem('sentry_session_token');
-        alert('Your session has expired. Please sign in again.' + detail);
         go('signin');
+        showFormError('si-session-msg', 'Your session has expired. Please sign in again.');
         return;
       }
       if(keysResp.ok){
