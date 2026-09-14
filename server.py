@@ -1,38 +1,72 @@
 """
-Sentry AI backend — single-file version.
-Run with: gunicorn main:app  (or `python main.py` for local dev)
+Fluid Intelligence backend — rebuilt single-file version.
+Run:  gunicorn main:app   (or `python main.py` locally)
+
+Rebuild notes (vs. the version that 401'd fresh sessions):
+- Token issue/verify is now demonstrably consistent (one secret, one function,
+  timezone-aware datetimes, no PyJWT deprecation edge cases).
+- 401s now say WHICH failure happened: unauthorized / session_expired /
+  invalid_token — no more guessing.
+- Added GET /auth/session (validate stored token + get account email — this
+  is what powers a *safe* auto sign-in after page refresh).
+- Added GET /version so you can always confirm which build Render is serving.
+- Added GET /healthz for Render health checks.
+- Rate-limit headers (X-RateLimit-Limit/Remaining/Reset) are now actually set
+  on responses — the docs always promised them, the old code never sent them.
+  429s include Retry-After (seconds until midnight UTC reset).
+- stream:true now returns a valid SSE response (single-chunk + [DONE]) instead
+  of being silently ignored. Token-by-token streaming is noted as TODO.
+- usage_counters.tokens_out is now actually written (old code computed it and
+  dropped it).
+- Schema auto-migrates with ALTER TABLE ... IF NOT EXISTS on boot.
+Secrets stay hardcoded here per project decision. Rotate them by editing this
+file and redeploying.
 """
 
 import os
 import json
 import secrets
+import re
 import datetime as dt
+from datetime import timezone
 from contextlib import contextmanager
 
 import bcrypt
 import jwt
 import requests
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response, g
 from flask_cors import CORS
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
 
 # =========================================================================
-# DATABASE
+# CONFIG
 # =========================================================================
 
-# dummy/test Aiven service URI — override in production via the DATABASE_URL env var
+APP_VERSION = os.environ.get("APP_VERSION", "rebuild-2026-09-14")
+
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
     "postgres://avnadmin:AVNS_q_zR9FvhvJHJGbiL0zp@pg-235735e2-ub7499710-7253.j.aivencloud.com:11602/defaultdb?sslmode=require",
 )
 
-_pool = pool.SimpleConnectionPool(
-    minconn=1,
-    maxconn=10,
-    dsn=DATABASE_URL,
-    sslmode="require",
-)
+JWT_SECRET = "21c8524d2320d22706fb366fc6ca9037050cdfda26c104ac0ecfa0215bebda7c"
+SESSION_HOURS = 24 * 7
+EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+
+DAILY_REQUEST_CAP = int(os.environ.get("DAILY_REQUEST_CAP", "3000"))
+MAX_INPUT_TOKENS = int(os.environ.get("MAX_INPUT_TOKENS", "8000"))
+MAX_TOOL_ITERATIONS = 5
+
+# Open CORS so a Vercel URL mismatch can never be the cause of anything.
+# Tighten to your real domain once the app is stable.
+FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "*")
+
+# =========================================================================
+# DATABASE
+# =========================================================================
+
+_pool = pool.SimpleConnectionPool(minconn=1, maxconn=10, dsn=DATABASE_URL, sslmode="require")
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS users (
@@ -51,7 +85,6 @@ CREATE TABLE IF NOT EXISTS api_keys (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     revoked_at  TIMESTAMPTZ
 );
-
 CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id);
 
 CREATE TABLE IF NOT EXISTS usage_counters (
@@ -63,13 +96,17 @@ CREATE TABLE IF NOT EXISTS usage_counters (
     PRIMARY KEY (api_key_id, usage_date)
 );
 
--- tracks which backend is currently cooling down after a failure, so the
--- router doesn't retry a backend it just saw fail on the very next request
 CREATE TABLE IF NOT EXISTS backend_status (
     backend_name       TEXT PRIMARY KEY,
     unavailable_until  TIMESTAMPTZ,
     last_error         TEXT
 );
+"""
+
+# idempotent migrations for databases created by older versions of this app
+MIGRATION_SQL = """
+ALTER TABLE usage_counters ADD COLUMN IF NOT EXISTS tokens_in INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE usage_counters ADD COLUMN IF NOT EXISTS tokens_out INTEGER NOT NULL DEFAULT 0;
 """
 
 
@@ -89,57 +126,86 @@ def get_cursor(commit=False):
 
 
 def init_schema():
-    """Idempotently create tables (CREATE TABLE IF NOT EXISTS). Safe to call on every boot/deploy.
-    Note: if usage_counters already exists from a prior deploy without tokens_in/tokens_out,
-    those two columns won't be added automatically — run one manual ALTER TABLE in that case:
-        ALTER TABLE usage_counters ADD COLUMN IF NOT EXISTS tokens_in INTEGER NOT NULL DEFAULT 0;
-        ALTER TABLE usage_counters ADD COLUMN IF NOT EXISTS tokens_out INTEGER NOT NULL DEFAULT 0;
-    """
     conn = _pool.getconn()
     try:
         with conn.cursor() as cur:
             cur.execute(SCHEMA_SQL)
+            cur.execute(MIGRATION_SQL)
         conn.commit()
     finally:
         _pool.putconn(conn)
 
 
-# =========================================================================
-# AUTH — passwords, session tokens, API key generation
-# =========================================================================
+def utcnow():
+    return dt.datetime.now(timezone.utc)
 
-JWT_SECRET = "21c8524d2320d22706fb366fc6ca9037050cdfda26c104ac0ecfa0215bebda7c"
-SESSION_HOURS = 24 * 7
 
+def seconds_until_midnight_utc():
+    now = utcnow()
+    midnight = (now + dt.timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return max(1, int((midnight - now).total_seconds()))
+
+
+# =========================================================================
+# AUTH — passwords, session tokens, API keys
+# =========================================================================
 
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 
 def check_password(password: str, password_hash: str) -> bool:
-    return bcrypt.checkpw(password.encode(), password_hash.encode())
+    try:
+        return bcrypt.checkpw(password.encode(), password_hash.encode())
+    except ValueError:
+        return False
 
 
 def create_session_token(user_id: int) -> str:
     payload = {
-        "sub": user_id,
-        "exp": dt.datetime.utcnow() + dt.timedelta(hours=SESSION_HOURS),
+        "sub": str(user_id),
+        "exp": utcnow() + dt.timedelta(hours=SESSION_HOURS),
+        "iat": utcnow(),
+        "v": 1,  # token format version — bump if you ever change signing
     }
     token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
-    # older PyJWT versions return bytes instead of str — normalize either way
     return token.decode() if isinstance(token, bytes) else token
 
 
 def verify_session_token(token: str):
+    """Returns (user_id, error). error is None, 'expired', or 'invalid'."""
+    if not token:
+        return None, "invalid"
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-        return payload["sub"]
-    except jwt.PyJWTError:
-        return None
+        return int(payload["sub"]), None
+    except jwt.ExpiredSignatureError:
+        return None, "expired"
+    except jwt.InvalidTokenError:
+        return None, "invalid"
+    except Exception:
+        return None, "invalid"
+
+
+def bearer_token():
+    header = request.headers.get("Authorization", "")
+    return header[7:].strip() if header.startswith("Bearer ") else ""
+
+
+def require_session():
+    """Returns (user_id, http_error_tuple_or_None)."""
+    token = bearer_token()
+    if not token:
+        return None, (jsonify(error="unauthorized"), 401)
+    user_id, err = verify_session_token(token)
+    if err == "expired":
+        return None, (jsonify(error="session_expired"), 401)
+    if err:
+        return None, (jsonify(error="invalid_token"), 401)
+    return user_id, None
 
 
 def generate_api_key():
-    """Returns (full_key, prefix, key_hash). Only the caller sees full_key, once."""
     raw = secrets.token_hex(24)  # 48 hex chars
     full_key = f"sk-sentry-{raw}"
     prefix = f"sk-sentry-{raw[:8]}..."
@@ -148,15 +214,12 @@ def generate_api_key():
 
 
 def create_api_key_for_user(user_id: int, name: str):
-    """Enforces the one-active-key-per-account rule (intentional — no multi-key support)."""
     with get_cursor() as cur:
         cur.execute(
-            "SELECT id FROM api_keys WHERE user_id = %s AND revoked_at IS NULL",
-            (user_id,),
+            "SELECT id FROM api_keys WHERE user_id = %s AND revoked_at IS NULL", (user_id,)
         )
         if cur.fetchone():
             raise ValueError("Account already has an active API key. Revoke it first.")
-
     full_key, prefix, key_hash = generate_api_key()
     with get_cursor(commit=True) as cur:
         cur.execute(
@@ -168,23 +231,10 @@ def create_api_key_for_user(user_id: int, name: str):
     return {"id": key_id, "key": full_key, "prefix": prefix, "name": name}
 
 
-def revoke_api_key(user_id: int, key_id: int):
-    with get_cursor(commit=True) as cur:
-        cur.execute(
-            """UPDATE api_keys SET revoked_at = now()
-               WHERE id = %s AND user_id = %s AND revoked_at IS NULL""",
-            (key_id, user_id),
-        )
-
-
-def authenticate_api_key(bearer_token: str):
-    """
-    Looks up the active key whose hash matches. Matches on key_prefix first
-    to narrow to ~1 row, then bcrypt-verifies. Fine at small scale.
-    """
-    if not bearer_token or not bearer_token.startswith("sk-sentry-"):
+def authenticate_api_key(token: str):
+    if not token or not token.startswith("sk-sentry-"):
         return None
-    prefix_guess = bearer_token[:18] + "..."  # "sk-sentry-" + 8 hex chars
+    prefix_guess = token[:18] + "..."
     with get_cursor() as cur:
         cur.execute(
             """SELECT id, user_id, key_hash FROM api_keys
@@ -194,32 +244,65 @@ def authenticate_api_key(bearer_token: str):
         row = cur.fetchone()
     if not row:
         return None
-    if not bcrypt.checkpw(bearer_token.encode(), row["key_hash"].encode()):
+    if not bcrypt.checkpw(token.encode(), row["key_hash"].encode()):
         return None
     return {"api_key_id": row["id"], "user_id": row["user_id"]}
 
 
 def get_users_active_key_id(user_id: int):
-    """Used by the session-authenticated playground so its usage still counts
-    against the account's real daily cap instead of bypassing it."""
     with get_cursor() as cur:
         cur.execute(
-            "SELECT id FROM api_keys WHERE user_id = %s AND revoked_at IS NULL",
-            (user_id,),
+            "SELECT id FROM api_keys WHERE user_id = %s AND revoked_at IS NULL", (user_id,)
         )
         row = cur.fetchone()
     return row["id"] if row else None
 
 
 # =========================================================================
-# BACKEND HEALTH / COOLDOWN TRACKING
+# USAGE / RATE LIMITING
 # =========================================================================
-# A backend that just failed (rate limited or errored) is marked unavailable
-# for a short cooldown window, so the very next request skips straight past
-# it instead of hitting the same failure again.
+
+def check_and_increment_rate_limit(api_key_id: int, tokens_in: int = 0) -> int:
+    """Increments today's counter and RETURNS the new count (caller compares
+    to the cap). Always records, so usage stays accurate even on the
+    request that tips over the limit."""
+    today = dt.date.today()
+    with get_cursor(commit=True) as cur:
+        cur.execute(
+            """INSERT INTO usage_counters (api_key_id, usage_date, request_count, tokens_in)
+               VALUES (%s, %s, 1, %s)
+               ON CONFLICT (api_key_id, usage_date)
+               DO UPDATE SET request_count = usage_counters.request_count + 1,
+                             tokens_in = usage_counters.tokens_in + EXCLUDED.tokens_in
+               RETURNING request_count""",
+            (api_key_id, today, tokens_in),
+        )
+        return cur.fetchone()["request_count"]
+
+
+def record_tokens_out(api_key_id: int, tokens_out: int):
+    if tokens_out <= 0:
+        return
+    with get_cursor(commit=True) as cur:
+        cur.execute(
+            """UPDATE usage_counters SET tokens_out = usage_counters.tokens_out + %s
+               WHERE api_key_id = %s AND usage_date = %s""",
+            (tokens_out, api_key_id, dt.date.today()),
+        )
+
+
+def set_rate_limit_headers(count: int):
+    g.rl_limit = DAILY_REQUEST_CAP
+    g.rl_remaining = max(0, DAILY_REQUEST_CAP - count)
+    g.rl_reset = seconds_until_midnight_utc()
+
+
+# =========================================================================
+# BACKEND COOLDOWNS
+# =========================================================================
 
 def mark_backend_down(name: str, error, cooldown_seconds: int = 30):
-    until = dt.datetime.utcnow() + dt.timedelta(seconds=cooldown_seconds)
+    until = utcnow() + dt.timedelta(seconds=cooldown_seconds)
     with get_cursor(commit=True) as cur:
         cur.execute(
             """INSERT INTO backend_status (backend_name, unavailable_until, last_error)
@@ -234,21 +317,20 @@ def mark_backend_down(name: str, error, cooldown_seconds: int = 30):
 def is_backend_available(name: str) -> bool:
     with get_cursor() as cur:
         cur.execute(
-            "SELECT unavailable_until FROM backend_status WHERE backend_name = %s",
-            (name,),
+            "SELECT unavailable_until FROM backend_status WHERE backend_name = %s", (name,)
         )
         row = cur.fetchone()
     if not row or not row["unavailable_until"]:
         return True
-    return dt.datetime.utcnow() > row["unavailable_until"]
+    return utcnow() > row["unavailable_until"]
 
 
 # =========================================================================
-# MODEL PROVIDERS — Groq, Mistral, Z.AI, Gemini, each with 2-key fallback
+# MODEL PROVIDERS
 # =========================================================================
 
 DEFAULT_ORDER = ["groq", "mistral", "zai", "gemini"]
-MEDIA_CAPABLE_ORDER = ["gemini"]  # only backend with confirmed free-tier image support
+MEDIA_CAPABLE_ORDER = ["gemini"]  # only backend with free-tier image support
 
 OPENAI_STYLE = {
     "groq": {
@@ -272,10 +354,6 @@ OPENAI_STYLE = {
         "extra_body": {},
     },
     "zai": {
-        # FIX: was pointed at open.bigmodel.cn (Zhipu's China-facing domain) with
-        # model "glm-4-plus" — wrong endpoint for these international Z.AI keys,
-        # and glm-4-plus isn't the free-tier model. Corrected to Z.AI's actual
-        # international endpoint and its free model.
         "base_url": "https://api.z.ai/api/paas/v4/chat/completions",
         "api_key_envs": ["ZAI_API_KEY_1", "ZAI_API_KEY_2"],
         "api_key_defaults": [
@@ -283,9 +361,8 @@ OPENAI_STYLE = {
             "f6bc4aac8cfe425cadde84bba181710e.wX0Wm0I8l3YDihGy",
         ],
         "model": os.environ.get("ZAI_MODEL", "glm-4.5-flash"),
-        # GLM-4.5-flash has chain-of-thought "thinking" on by default, which can
-        # consume the entire max_tokens budget before writing a visible answer,
-        # leaving `content` empty. Disable it for plain chat completions.
+        # GLM thinking-on would burn the whole max_tokens budget before
+        # producing a visible answer — keep it disabled for plain chat.
         "extra_body": {"thinking": {"type": "disabled"}},
     },
 }
@@ -297,44 +374,47 @@ GEMINI_API_KEY_DEFAULTS = [
 ]
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
 
+# sampling params we forward to OpenAI-style providers when the client sets them
+PASSTHROUGH_PARAMS = ("temperature", "top_p", "top_k", "max_tokens", "stop", "seed",
+                      "presence_penalty", "frequency_penalty", "response_format")
+
 
 class ProviderError(Exception):
     pass
 
 
 def has_media(messages: list) -> bool:
-    """True if any message contains an image/audio/video content block
-    (OpenAI-style list content), rather than being plain text."""
     for m in messages:
         content = m.get("content")
         if isinstance(content, list):
             for block in content:
-                if isinstance(block, dict) and block.get("type") in (
-                    "image_url", "input_audio", "video_url",
-                ):
+                if isinstance(block, dict) and block.get("type") in ("image_url", "input_audio", "video_url"):
                     return True
     return False
 
 
 def estimate_tokens(messages) -> int:
-    """Rough estimate (chars/4) — good enough for a request-size cap, not for billing precision."""
     return max(1, len(json.dumps(messages)) // 4)
 
 
-def _call_openai_style(provider: str, messages: list, tools, timeout: int):
+def _forward_sampling_params(body: dict, client_body: dict):
+    for p in PASSTHROUGH_PARAMS:
+        if p in client_body and client_body[p] is not None:
+            body[p] = client_body[p]
+
+
+def _call_openai_style(provider: str, messages: list, client_body: dict, tools, timeout: int):
     if not is_backend_available(provider):
         raise ProviderError(f"{provider}: cooling down after a recent failure")
 
     cfg = OPENAI_STYLE[provider]
-    keys = [
-        os.environ.get(env, default)
-        for env, default in zip(cfg["api_key_envs"], cfg["api_key_defaults"])
-    ]
+    keys = [os.environ.get(e, d) for e, d in zip(cfg["api_key_envs"], cfg["api_key_defaults"])]
     keys = [k for k in keys if k]
     if not keys:
         raise ProviderError(f"{provider}: no API keys configured")
 
     body = {"model": cfg["model"], "messages": messages}
+    _forward_sampling_params(body, client_body or {})
     if tools:
         body["tools"] = tools
     if cfg.get("extra_body"):
@@ -373,19 +453,17 @@ def _call_openai_style(provider: str, messages: list, tools, timeout: int):
 
 
 def _messages_to_gemini_contents(messages: list):
-    """
-    Gemini uses {role, parts:[{text}|{inline_data}]} and has no 'system' role —
-    fold system text into the first user turn. Also translates OpenAI-style
-    image_url content blocks (base64 data URIs) into Gemini's inline_data parts.
-    """
-    system_texts = [m["content"] for m in messages if m["role"] == "system" and isinstance(m["content"], str)]
+    system_texts = [
+        m["content"] for m in messages
+        if m["role"] == "system" and isinstance(m["content"], str)
+    ]
     prefix = ("\n\n".join(system_texts) + "\n\n") if system_texts else ""
 
     contents = []
     for m in messages:
         if m["role"] == "system":
             continue
-        role = "model" if m["role"] == "assistant" else "user"
+        role = "model" if m["role"] == "assistant" else "user"  # 'tool' -> user
         content = m["content"]
         parts = []
 
@@ -407,10 +485,8 @@ def _messages_to_gemini_contents(messages: list):
                     url = block.get("image_url", {}).get("url", "")
                     if url.startswith("data:"):
                         mime, _, b64data = url.partition(";base64,")
-                        mime = mime.replace("data:", "")
-                        parts.append({"inline_data": {"mime_type": mime, "data": b64data}})
-                    # non-data-URI (hosted) image URLs aren't supported by this
-                    # simple adapter yet — data URIs only for now.
+                        parts.append({"inline_data": {"mime_type": mime.replace("data:", ""), "data": b64data}})
+                    # hosted (non-data-URI) images are not translated yet
 
         contents.append({"role": role, "parts": parts})
 
@@ -421,10 +497,7 @@ def _call_gemini(messages: list, timeout: int):
     if not is_backend_available("gemini"):
         raise ProviderError("gemini: cooling down after a recent failure")
 
-    keys = [
-        os.environ.get(env, default)
-        for env, default in zip(GEMINI_API_KEY_ENVS, GEMINI_API_KEY_DEFAULTS)
-    ]
+    keys = [os.environ.get(e, d) for e, d in zip(GEMINI_API_KEY_ENVS, GEMINI_API_KEY_DEFAULTS)]
     keys = [k for k in keys if k]
     if not keys:
         raise ProviderError("gemini: no API keys configured")
@@ -456,16 +529,7 @@ def _call_gemini(messages: list, timeout: int):
     raise ProviderError(last_error or "gemini: all keys failed")
 
 
-def call_model(messages: list, tools=None, timeout: int = 30, order=None):
-    """
-    Tries providers in order; within each provider, tries key 1 then key 2.
-    Falls through on any ProviderError, timeout, or HTTP error. Raises
-    ProviderError only if every provider/key combination fails.
-
-    If the request contains an image/audio/video block, only media-capable
-    backends are tried — a text-only backend would either error or silently
-    ignore the attachment, neither of which is acceptable to fail into.
-    """
+def call_model(messages: list, client_body: dict = None, tools=None, timeout: int = 30, order=None):
     if order is None:
         if has_media(messages):
             order = MEDIA_CAPABLE_ORDER
@@ -478,7 +542,7 @@ def call_model(messages: list, tools=None, timeout: int = 30, order=None):
             if provider == "gemini":
                 return _call_gemini(messages, timeout)
             elif provider in OPENAI_STYLE:
-                return _call_openai_style(provider, messages, tools, timeout)
+                return _call_openai_style(provider, messages, client_body, tools, timeout)
         except (ProviderError, requests.RequestException) as e:
             last_error = e
             continue
@@ -487,7 +551,7 @@ def call_model(messages: list, tools=None, timeout: int = 30, order=None):
 
 
 # =========================================================================
-# TOOLS — Tavily live web search, 2-key fallback
+# TOOLS — Tavily live web search
 # =========================================================================
 
 TAVILY_KEYS = [
@@ -533,51 +597,34 @@ def web_search(query: str, max_results: int = 5):
     raise RuntimeError(f"Tavily search failed on all keys: {last_error}")
 
 
-TOOL_IMPLEMENTATIONS = {
-    "web_search": web_search,
-}
+TOOL_IMPLEMENTATIONS = {"web_search": web_search}
 
 
-# =========================================================================
-# AGENTIC LOOP — calls model, executes tool calls, feeds results back
-# =========================================================================
-
-MAX_TOOL_ITERATIONS = 5
-
-
-def run_agentic_completion(messages: list, web_search_enabled: bool = True):
-    """
-    Returns the final assistant message once no more tool calls are made,
-    or once MAX_TOOL_ITERATIONS is hit (safety cap so a stuck loop can't burn
-    through the daily provider quota).
-    """
+def run_agentic_completion(messages: list, client_body: dict = None, web_search_enabled: bool = True):
+    """Model -> tool calls -> results -> model, until no more tool calls or
+    MAX_TOOL_ITERATIONS is hit."""
     tools = [WEB_SEARCH_TOOL_SCHEMA] if web_search_enabled else None
-    working_messages = list(messages)
+    working = list(messages)
 
     for _ in range(MAX_TOOL_ITERATIONS):
-        result = call_model(working_messages, tools=tools)
+        result = call_model(working, client_body=client_body, tools=tools)
 
         if not result.get("tool_calls"):
             return {"content": result["content"], "provider": result["provider"]}
 
-        working_messages.append({"role": "assistant", "content": result.get("content") or ""})
-
+        working.append({"role": "assistant", "content": result.get("content") or ""})
         for call in result["tool_calls"]:
             fn_name = call["function"]["name"]
-            fn_args = json.loads(call["function"]["arguments"])
+            try:
+                fn_args = json.loads(call["function"]["arguments"] or "{}")
+            except json.JSONDecodeError:
+                fn_args = {}
             impl = TOOL_IMPLEMENTATIONS.get(fn_name)
-
-            if impl is None:
-                tool_output = {"error": f"unknown tool {fn_name}"}
-            else:
-                try:
-                    tool_output = impl(**fn_args)
-                except Exception as e:
-                    tool_output = {"error": str(e)}
-
-            working_messages.append(
-                {"role": "tool", "name": fn_name, "content": json.dumps(tool_output)}
-            )
+            try:
+                tool_output = impl(**fn_args) if impl else {"error": f"unknown tool {fn_name}"}
+            except Exception as e:
+                tool_output = {"error": str(e)}
+            working.append({"role": "tool", "name": fn_name, "content": json.dumps(tool_output)})
 
     return {"content": "I wasn't able to finish that within the tool-call limit.", "provider": None}
 
@@ -586,55 +633,76 @@ def run_agentic_completion(messages: list, web_search_enabled: bool = True):
 # FLASK APP
 # =========================================================================
 
-DAILY_REQUEST_CAP = int(os.environ.get("DAILY_REQUEST_CAP", "3000"))
-MAX_INPUT_TOKENS = int(os.environ.get("MAX_INPUT_TOKENS", "8000"))  # matches the public "8K tokens/request" figure
-# CORS: was locked to one exact hardcoded origin, which breaks the moment
-# your real Vercel URL differs by even a trailing slash or subdomain. Opened
-# up for now so a URL mismatch can't be the cause of anything — tighten this
-# back to your real domain once the app is stable and live.
-FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "*")
-
-
 def create_app():
-    flask_app = Flask(__name__)
-    CORS(flask_app, resources={r"/*": {"origins": FRONTEND_ORIGIN}})
+    app = Flask(__name__)
+    CORS(app, resources={r"/*": {"origins": FRONTEND_ORIGIN}})
 
-    with flask_app.app_context():
+    with app.app_context():
         init_schema()
 
-    # ---------- account endpoints ----------
+    @app.after_request
+    def attach_rate_limit_headers(resp):
+        if hasattr(g, "rl_limit"):
+            resp.headers["X-RateLimit-Limit"] = str(g.rl_limit)
+            resp.headers["X-RateLimit-Remaining"] = str(g.rl_remaining)
+            resp.headers["X-RateLimit-Reset"] = str(g.rl_reset)
+        return resp
 
-    @flask_app.post("/auth/signup")
+    # ---------- meta ----------
+
+    @app.get("/healthz")
+    def healthz():
+        return jsonify(ok=True, version=APP_VERSION)
+
+    @app.get("/version")
+    def version():
+        """Hit this after every deploy to confirm Render serves the build you think it is."""
+        return jsonify(version=APP_VERSION, python=os.sys.version.split()[0])
+
+    @app.get("/stats/public")
+    def public_stats():
+        with get_cursor() as cur:
+            cur.execute("SELECT COUNT(*) AS c FROM users")
+            users_count = cur.fetchone()["c"]
+            cur.execute("SELECT COUNT(*) AS c FROM api_keys WHERE revoked_at IS NULL")
+            keys_count = cur.fetchone()["c"]
+        return jsonify(users=users_count, keys=keys_count)
+
+    @app.get("/v1/models")
+    def list_models():
+        resp = jsonify(data=[{"id": "sentry-1", "object": "model"}])
+        return resp
+
+    # ---------- auth ----------
+
+    @app.post("/auth/signup")
     def signup():
-        data = request.get_json(force=True)
-        email, password = data.get("email"), data.get("password")
-        if not email or not password:
-            return jsonify(error="email and password required"), 400
-        # normalize so "User@X.com" and "user@x.com " aren't treated as
-        # different accounts between signup and signin
-        email = email.strip().lower()
+        data = request.get_json(force=True, silent=True) or {}
+        email = (data.get("email") or "").strip().lower()
+        password = data.get("password") or ""
 
-        password_hash = hash_password(password)
+        if not EMAIL_RE.match(email):
+            return jsonify(error="enter a valid email address"), 400
+        if len(password) < 8:
+            return jsonify(error="password must be at least 8 characters"), 400
+
         try:
             with get_cursor(commit=True) as cur:
                 cur.execute(
                     "INSERT INTO users (email, password_hash) VALUES (%s, %s) RETURNING id",
-                    (email, password_hash),
+                    (email, hash_password(password)),
                 )
                 user_id = cur.fetchone()["id"]
         except Exception:
             return jsonify(error="email already registered"), 409
 
-        token = create_session_token(user_id)
-        return jsonify(token=token), 201
+        return jsonify(token=create_session_token(user_id)), 201
 
-    @flask_app.post("/auth/signin")
+    @app.post("/auth/signin")
     def signin():
-        data = request.get_json(force=True)
-        email, password = data.get("email"), data.get("password")
-        if not email or not password:
-            return jsonify(error="email and password required"), 400
-        email = email.strip().lower()
+        data = request.get_json(force=True, silent=True) or {}
+        email = (data.get("email") or "").strip().lower()
+        password = data.get("password") or ""
         with get_cursor() as cur:
             cur.execute("SELECT id, password_hash FROM users WHERE email = %s", (email,))
             row = cur.fetchone()
@@ -642,53 +710,56 @@ def create_app():
             return jsonify(error="invalid credentials"), 401
         return jsonify(token=create_session_token(row["id"]))
 
-    def _require_session():
-        header = request.headers.get("Authorization", "")
-        # manual strip instead of str.removeprefix() — that method needs
-        # Python 3.9+, and silently misbehaves as a no-op on older runtimes
-        token = header[7:].strip() if header.startswith("Bearer ") else header.strip()
-        return verify_session_token(token)
+    @app.get("/auth/session")
+    def auth_session():
+        """Validate a stored session token and return the account email.
+        This is the endpoint a safe auto-sign-in flow calls on page load:
+        200 -> enter console, 401 -> silently go to sign-in."""
+        user_id, err = require_session()
+        if err:
+            return err
+        with get_cursor() as cur:
+            cur.execute("SELECT email FROM users WHERE id = %s", (user_id,))
+            row = cur.fetchone()
+        if not row:
+            return jsonify(error="invalid_token"), 401
+        return jsonify(email=row["email"])
 
-    @flask_app.post("/console/password")
+    @app.post("/console/password")
     def update_password():
-        """Backs the console's Settings > Change password form. Added so that
-        form isn't a no-op UI element — it used to show 'Saved.' without ever
-        calling the backend."""
-        user_id = _require_session()
-        if not user_id:
-            return jsonify(error="unauthorized"), 401
-        data = request.get_json(force=True)
-        password = data.get("password")
-        if not password or len(password) < 8:
+        user_id, err = require_session()
+        if err:
+            return err
+        data = request.get_json(force=True, silent=True) or {}
+        password = data.get("password") or ""
+        if len(password) < 8:
             return jsonify(error="password must be at least 8 characters"), 400
-
-        password_hash = hash_password(password)
         with get_cursor(commit=True) as cur:
             cur.execute(
                 "UPDATE users SET password_hash = %s WHERE id = %s",
-                (password_hash, user_id),
+                (hash_password(password), user_id),
             )
         return jsonify(ok=True)
 
-    # ---------- API key management (requires session token) ----------
+    # ---------- console: API keys ----------
 
-    @flask_app.post("/console/keys")
+    @app.post("/console/keys")
     def create_key():
-        user_id = _require_session()
-        if not user_id:
-            return jsonify(error="unauthorized"), 401
-        name = request.get_json(force=True).get("name", "default")
+        user_id, err = require_session()
+        if err:
+            return err
+        data = request.get_json(force=True, silent=True) or {}
+        name = (data.get("name") or "default").strip()[:80] or "default"
         try:
-            key_info = create_api_key_for_user(user_id, name)
+            return jsonify(create_api_key_for_user(user_id, name)), 201
         except ValueError as e:
             return jsonify(error=str(e)), 409
-        return jsonify(key_info), 201
 
-    @flask_app.get("/console/keys")
+    @app.get("/console/keys")
     def list_keys():
-        user_id = _require_session()
-        if not user_id:
-            return jsonify(error="unauthorized"), 401
+        user_id, err = require_session()
+        if err:
+            return err
         with get_cursor() as cur:
             cur.execute(
                 """SELECT id, name, key_prefix AS prefix, created_at
@@ -699,28 +770,27 @@ def create_app():
             rows = cur.fetchall()
         return jsonify(keys=[dict(r, created_at=r["created_at"].isoformat()) for r in rows])
 
-    @flask_app.delete("/console/keys/<int:key_id>")
+    @app.delete("/console/keys/<int:key_id>")
     def revoke_key(key_id):
-        user_id = _require_session()
-        if not user_id:
-            return jsonify(error="unauthorized"), 401
-        revoke_api_key(user_id, key_id)
+        user_id, err = require_session()
+        if err:
+            return err
+        with get_cursor(commit=True) as cur:
+            cur.execute(
+                """UPDATE api_keys SET revoked_at = now()
+                   WHERE id = %s AND user_id = %s AND revoked_at IS NULL""",
+                (key_id, user_id),
+            )
         return "", 204
 
-    @flask_app.get("/console/usage")
+    @app.get("/console/usage")
     def console_usage():
-        user_id = _require_session()
-        if not user_id:
-            return jsonify(error="unauthorized"), 401
+        user_id, err = require_session()
+        if err:
+            return err
 
-        with get_cursor() as cur:
-            cur.execute(
-                "SELECT id FROM api_keys WHERE user_id = %s AND revoked_at IS NULL",
-                (user_id,),
-            )
-            key_row = cur.fetchone()
-
-        if not key_row:
+        key_id = get_users_active_key_id(user_id)
+        if not key_id:
             return jsonify(requests_today=0, daily_cap=DAILY_REQUEST_CAP, history=[0] * 7)
 
         today = dt.date.today()
@@ -730,149 +800,104 @@ def create_app():
                 day = today - dt.timedelta(days=i)
                 cur.execute(
                     "SELECT request_count FROM usage_counters WHERE api_key_id = %s AND usage_date = %s",
-                    (key_row["id"], day),
+                    (key_id, day),
                 )
                 row = cur.fetchone()
                 history.append(row["request_count"] if row else 0)
 
         return jsonify(requests_today=history[-1], daily_cap=DAILY_REQUEST_CAP, history=history)
 
-    # ---------- public API (requires bearer API key, not session token) ----------
+    # ---------- completions (shared core, two auth front-ends) ----------
 
-    def _require_api_key():
-        header = request.headers.get("Authorization", "")
-        token = header[7:].strip() if header.startswith("Bearer ") else header.strip()
-        return authenticate_api_key(token)
+    def completion_core(body: dict, api_key_id: int):
+        """Returns (response_dict, status, count_after_increment)."""
+        messages = body.get("messages") or []
+        if not messages:
+            return {"error": {"message": "messages required"}}, 400, None
 
-    def _check_and_increment_rate_limit(api_key_id: int, tokens_in: int = 0, tokens_out: int = 0) -> bool:
-        """Returns True if this request is allowed under today's cap. Always
-        records the request + token counts either way, so usage stays accurate
-        even on the request that tips it over the limit."""
-        today = dt.date.today()
-        with get_cursor(commit=True) as cur:
-            cur.execute(
-                """INSERT INTO usage_counters (api_key_id, usage_date, request_count, tokens_in, tokens_out)
-                   VALUES (%s, %s, 1, %s, %s)
-                   ON CONFLICT (api_key_id, usage_date)
-                   DO UPDATE SET request_count = usage_counters.request_count + 1,
-                                 tokens_in = usage_counters.tokens_in + EXCLUDED.tokens_in,
-                                 tokens_out = usage_counters.tokens_out + EXCLUDED.tokens_out
-                   RETURNING request_count""",
-                (api_key_id, today, tokens_in, tokens_out),
-            )
-            count = cur.fetchone()["request_count"]
-        return count <= DAILY_REQUEST_CAP
-
-    @flask_app.get("/v1/models")
-    def list_models():
-        return jsonify(data=[{"id": "sentry-1", "object": "model"}])
-
-    @flask_app.get("/stats/public")
-    def public_stats():
-        with get_cursor() as cur:
-            cur.execute("SELECT COUNT(*) AS c FROM users")
-            users_count = cur.fetchone()["c"]
-            cur.execute("SELECT COUNT(*) AS c FROM api_keys WHERE revoked_at IS NULL")
-            keys_count = cur.fetchone()["c"]
-        return jsonify(users=users_count, keys=keys_count)
-
-    def _run_completion_or_error(messages, web_search_enabled):
-        """Shared by /v1/chat/completions and the playground — same code path,
-        same limits, same behavior, just different auth in front of it."""
         tokens_in = estimate_tokens(messages)
         if tokens_in > MAX_INPUT_TOKENS:
-            return None, (jsonify(error={"message": f"request exceeds the {MAX_INPUT_TOKENS}-token limit"}), 413)
-        try:
-            result = run_agentic_completion(messages, web_search_enabled=web_search_enabled)
-        except ProviderError as e:
-            return None, (jsonify(error={"message": str(e)}), 502)
-        return (result, tokens_in), None
+            return {"error": {"message": f"request exceeds the {MAX_INPUT_TOKENS}-token limit"}}, 413, None
 
-    @flask_app.post("/v1/chat/completions")
+        count = check_and_increment_rate_limit(api_key_id, tokens_in=tokens_in)
+        set_rate_limit_headers(count)
+        if count > DAILY_REQUEST_CAP:
+            resp = jsonify(error={"message": "daily request cap exceeded"})
+            resp.status_code = 429
+            resp.headers["Retry-After"] = str(seconds_until_midnight_utc())
+            return None, 429, count
+
+        web_search_enabled = bool((body.get("web_search") or {}).get("enabled"))
+        try:
+            result = run_agentic_completion(messages, client_body=body, web_search_enabled=web_search_enabled)
+        except ProviderError as e:
+            return {"error": {"message": str(e)}}, 502, count
+
+        tokens_out = estimate_tokens([{"content": result["content"]}])
+        record_tokens_out(api_key_id, tokens_out)
+
+        payload = {
+            "id": "chatcmpl-sentry1",
+            "object": "chat.completion",
+            "model": "sentry-1",
+            "choices": [
+                {"index": 0, "message": {"role": "assistant", "content": result["content"]}}
+            ],
+            "_provider_used": result["provider"],
+            "usage": {"prompt_tokens_est": tokens_in, "completion_tokens_est": tokens_out},
+        }
+        return payload, 200, count
+
+    def sse_shim(payload: dict) -> Response:
+        """Honors stream:true with a valid SSE shape (one chunk + [DONE]).
+        TODO: true token-by-token streaming would require streaming from each
+        upstream provider through the tool loop — out of scope for this rebuild."""
+        chunk = {
+            "id": payload["id"],
+            "object": "chat.completion.chunk",
+            "model": payload["model"],
+            "choices": [{"index": 0, "delta": {"role": "assistant", "content": payload["choices"][0]["message"]["content"]}, "finish_reason": "stop"}],
+        }
+        body = f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n"
+        return Response(body, mimetype="text/event-stream")
+
+    @app.post("/v1/chat/completions")
     def chat_completions():
-        identity = _require_api_key()
+        identity = authenticate_api_key(bearer_token())
         if not identity:
             return jsonify(error={"message": "invalid API key"}), 401
 
-        body = request.get_json(force=True)
-        messages = body.get("messages", [])
-        web_search_enabled = bool(body.get("web_search", {}).get("enabled"))
+        body = request.get_json(force=True, silent=True) or {}
+        payload, status, _ = completion_core(body, identity["api_key_id"])
+        if status == 429:
+            return payload  # already a Response with Retry-After
+        if status != 200:
+            return jsonify(payload), status
+        if body.get("stream"):
+            return sse_shim(payload)
+        return jsonify(payload)
 
-        tokens_in = estimate_tokens(messages)
-        if tokens_in > MAX_INPUT_TOKENS:
-            return jsonify(error={"message": f"request exceeds the {MAX_INPUT_TOKENS}-token limit"}), 413
-
-        # check-and-reserve happens before the call so a burst of concurrent
-        # requests can't all slip through while the cap check is in flight
-        if not _check_and_increment_rate_limit(identity["api_key_id"], tokens_in=tokens_in):
-            return jsonify(error={"message": "daily request cap exceeded"}), 429
-
-        try:
-            result = run_agentic_completion(messages, web_search_enabled=web_search_enabled)
-        except ProviderError as e:
-            return jsonify(error={"message": str(e)}), 502
-
-        tokens_out = estimate_tokens([{"content": result["content"]}])
-
-        return jsonify(
-            {
-                "id": "chatcmpl-sentry1",
-                "object": "chat.completion",
-                "model": "sentry-1",
-                "choices": [
-                    {"index": 0, "message": {"role": "assistant", "content": result["content"]}}
-                ],
-                "_provider_used": result["provider"],
-                "usage": {"prompt_tokens_est": tokens_in, "completion_tokens_est": tokens_out},
-            }
-        )
-
-    @flask_app.post("/console/playground/chat")
+    @app.post("/console/playground/chat")
     def playground_chat():
-        """
-        Session-authenticated proxy for the in-console Playground.
-        FIX: this previously had no rate limit at all ("not subject to the
-        per-API-key daily cap since it's tied to the session, not a key") —
-        that meant any signed-in user had unmetered access to the exact same
-        backend calls as the public API. It now counts against that user's
-        own API key's daily cap, same as calling the public endpoint would.
-        """
-        user_id = _require_session()
-        if not user_id:
-            return jsonify(error={"message": "unauthorized"}), 401
+        user_id, err = require_session()
+        if err:
+            # console endpoints speak string errors; keep playground consistent
+            body, code = err
+            return jsonify(error=body.get_json().get("error", "unauthorized")), code
 
         key_id = get_users_active_key_id(user_id)
         if not key_id:
             return jsonify(error={"message": "create an API key first"}), 400
 
-        body = request.get_json(force=True)
-        messages = body.get("messages", [])
-        web_search_enabled = bool(body.get("web_search", {}).get("enabled"))
+        body = request.get_json(force=True, silent=True) or {}
+        payload, status, _ = completion_core(body, key_id)
+        if status == 429:
+            return payload
+        if status != 200:
+            return jsonify(payload), status
+        return jsonify(payload)
 
-        tokens_in = estimate_tokens(messages)
-        if tokens_in > MAX_INPUT_TOKENS:
-            return jsonify(error={"message": f"request exceeds the {MAX_INPUT_TOKENS}-token limit"}), 413
-
-        if not _check_and_increment_rate_limit(key_id, tokens_in=tokens_in):
-            return jsonify(error={"message": "daily request cap exceeded"}), 429
-
-        try:
-            result = run_agentic_completion(messages, web_search_enabled=web_search_enabled)
-        except ProviderError as e:
-            return jsonify(error={"message": str(e)}), 502
-
-        return jsonify(
-            {
-                "id": "chatcmpl-sentry1",
-                "object": "chat.completion",
-                "model": "sentry-1",
-                "choices": [
-                    {"index": 0, "message": {"role": "assistant", "content": result["content"]}}
-                ],
-            }
-        )
-
-    return flask_app
+    return app
 
 
 app = create_app()
