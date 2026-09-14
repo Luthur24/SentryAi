@@ -108,7 +108,7 @@ def init_schema():
 # AUTH — passwords, session tokens, API key generation
 # =========================================================================
 
-JWT_SECRET = os.environ.get("JWT_SECRET", "dev-only-dummy-secret-change-me-in-production-32chars")
+JWT_SECRET = "21c8524d2320d22706fb366fc6ca9037050cdfda26c104ac0ecfa0215bebda7c"
 SESSION_HOURS = 24 * 7
 
 
