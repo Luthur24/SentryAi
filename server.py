@@ -366,8 +366,33 @@ def is_backend_available(name: str) -> bool:
 # MODEL PROVIDERS
 # =========================================================================
 
+# ---------------------------------------------------------------------------
+# ROUTING TABLE
+# Each provider declares what it can actually do on the free tier it runs on.
+# The router picks from this table instead of hardcoded order lists, so a
+# request always lands on a provider that can serve it — and when a provider
+# is dead/cooling down, the router moves to the next *capable* one.
+# ---------------------------------------------------------------------------
+PROVIDERS = {
+    "groq": {
+        "text": True, "tools": True, "media": True, "streaming": True,
+        "reasoning": True,
+    },
+    "mistral": {
+        "text": True, "tools": True, "media": False, "streaming": True,
+        "reasoning": False,
+    },
+    "zai": {
+        "text": True, "tools": True, "media": False, "streaming": True,
+        "reasoning": False,
+    },
+    "gemini": {
+        "text": True, "tools": False, "media": True, "streaming": True,
+        "reasoning": False,
+    },
+}
+
 DEFAULT_ORDER = ["groq", "mistral", "zai", "gemini"]
-MEDIA_CAPABLE_ORDER = ["gemini"]
 
 OPENAI_STYLE = {
     "groq": {
@@ -500,6 +525,14 @@ def _call_openai_style(provider: str, messages: list, client_body: dict, tools, 
                 mark_key_down(provider, key, last_error, cooldown_seconds=60)
                 logger.warning(f"{provider}: 429 on key {_hash_key(key)}, cooling down 60s")
                 continue
+            if resp.status_code in (401, 403):
+                # Key is invalid/revoked/restricted -- not a transient error.
+                # Long cooldown so we fail fast and clearly instead of
+                # hammering a dead key on every request.
+                last_error = f"{provider}: key {_hash_key(key)} rejected with {resp.status_code} (invalid or restricted key)"
+                mark_key_down(provider, key, last_error, cooldown_seconds=6 * 3600)
+                logger.error(f"{provider}: {resp.status_code} on key {_hash_key(key)} -- key invalid, cooling down 6h")
+                continue
             if resp.status_code >= 500:
                 last_error = f"{provider}: server error {resp.status_code}"
                 mark_key_down(provider, key, last_error, cooldown_seconds=30)
@@ -576,6 +609,34 @@ def _fetch_media_as_base64(url: str, max_size_mb: int = 5) -> tuple:
         return b64, content_type
     except requests.RequestException as e:
         raise ProviderError(f"Failed to fetch media: {e}")
+
+
+def _media_messages_to_data_urls(messages: list) -> list:
+    """Convert remote image URLs in messages to data: URLs so a media request
+    can still be served by OpenAI-style vision providers when Gemini is down
+    or its keys are invalid."""
+    converted = []
+    for m in messages:
+        content = m.get("content")
+        if not isinstance(content, list):
+            converted.append(m)
+            continue
+        blocks = []
+        changed = False
+        for block in content:
+            b = dict(block)
+            if b.get("type") == "image_url":
+                url = (b.get("image_url") or {}).get("url", "")
+                if url.startswith("https://"):
+                    try:
+                        b64, mime = _fetch_media_as_base64(url, max_size_mb=5)
+                        b["image_url"] = {"url": f"data:{mime};base64,{b64}"}
+                        changed = True
+                    except ProviderError as e:
+                        logger.warning(f"media fallback: could not fetch image ({url[:60]}...): {e}")
+            blocks.append(b)
+        converted.append({**m, "content": blocks} if changed else m)
+    return converted
 
 
 def _messages_to_gemini_contents(messages: list):
@@ -769,6 +830,11 @@ def _call_gemini(messages: list, timeout: int, stream: bool = False):
                 mark_key_down("gemini", key, last_error, cooldown_seconds=60)
                 logger.warning(f"gemini: 429 on key {_hash_key(key)}")
                 continue
+            if resp.status_code in (401, 403):
+                last_error = f"gemini: key {_hash_key(key)} rejected with {resp.status_code} (invalid or restricted key)"
+                mark_key_down("gemini", key, last_error, cooldown_seconds=6 * 3600)
+                logger.error(f"gemini: {resp.status_code} on key {_hash_key(key)} -- key invalid, cooling down 6h")
+                continue
             if resp.status_code >= 500:
                 last_error = f"gemini: server error {resp.status_code}"
                 mark_key_down("gemini", key, last_error, cooldown_seconds=30)
@@ -800,34 +866,144 @@ def _call_gemini(messages: list, timeout: int, stream: bool = False):
     raise ProviderError(last_error or "gemini: all keys failed")
 
 
-def call_model(messages: list, client_body: dict = None, tools=None, timeout: int = 30, order=None, stream: bool = False):
-    if order is None:
-        if has_media(messages):
-            order = MEDIA_CAPABLE_ORDER
-        else:
-            order = [p.strip() for p in os.environ.get("PROVIDER_ORDER", ",".join(DEFAULT_ORDER)).split(",")]
+def _rank_providers(messages: list, tools, stream: bool, client_body: dict) -> list:
+    """Rank all capable providers for this request.
 
-    last_error = None
-    for provider in order:
+    Scoring (lower = better):
+      +0  primary path — provider natively supports everything requested
+      +2  media fallback — media request served via data-URL conversion
+      +3  tool fallback — tools stripped, Tavily pre-search injected instead
+    """
+    needs_media = has_media(messages)
+    needs_tools = bool(tools)
+    wants_reasoning = bool(((client_body or {}).get("reasoning") or {}).get("enabled"))
+
+    candidates = []  # (score, position_in_DEFAULT_ORDER, name, converted_msgs, use_tools)
+    for pos, name in enumerate(DEFAULT_ORDER):
+        caps = PROVIDERS[name]
+        if not caps["text"]:
+            continue
+        score = pos  # base preference from DEFAULT_ORDER
+
+        use_tools = needs_tools
+        msgs = messages
+
+        if needs_media:
+            if caps["media"]:
+                # Native media provider — boost above text-only providers
+                # so gemini/groq-vision are tried before mistral/zai.
+                score -= 5
+            elif caps["text"]:
+                # Can serve media if we convert remote URLs to data URLs.
+                # +10 ensures every native-media provider is tried first.
+                score += 10
+            else:
+                continue
+
+        if needs_tools:
+            if caps["tools"]:
+                pass  # native tool support
+            else:
+                # Can't do tools — will strip them and pre-inject Tavily results.
+                # +10 ensures every tool-capable provider is tried first.
+                score += 10
+                use_tools = False
+
+        if wants_reasoning and caps.get("reasoning"):
+            score -= 1  # slight boost — provider handles reasoning natively
+
+        candidates.append((score, pos, name, msgs, use_tools))
+
+    candidates.sort(key=lambda c: (c[0], c[1]))
+    return candidates
+
+
+def call_model(messages: list, client_body: dict = None, tools=None, timeout: int = 30, order=None, stream: bool = False):
+    """Route a request to the best provider that can actually serve it.
+
+    Strategy per request shape:
+      text only        -> groq / mistral / zai (skip gemini unless others dead)
+      text + tools     -> groq / mistral / zai (gemini can't do tools)
+      text + media     -> gemini first; if dead, groq with data-URL conversion
+      text + tools + media -> gemini can't do tools; groq does both natively
+      any + streaming  -> same routing, streaming passed through
+    """
+    errors = []
+
+    # Explicit order override (env or caller) still respected
+    if order is not None:
+        names = order
+    else:
+        env_order = os.environ.get("PROVIDER_ORDER")
+        if env_order:
+            names = [p.strip() for p in env_order.split(",")]
+        else:
+            names = None  # use capability ranking
+
+    if names:
+        # Legacy explicit-order path: filter to capable providers only
+        needs_media = has_media(messages)
+        needs_tools = bool(tools)
+        ranked = []
+        for name in names:
+            caps = PROVIDERS.get(name)
+            if not caps or not caps["text"]:
+                continue
+            if needs_media and not caps["media"]:
+                continue
+            if needs_tools and not caps["tools"]:
+                continue
+            ranked.append((0, 0, name, messages, bool(tools)))
+    else:
+        ranked = _rank_providers(messages, tools, stream, client_body)
+
+    # --- Pass 1: try every capable provider, native capabilities only ---
+    for score, pos, name, msgs, use_tools in ranked:
+        # Media fallback entries (score penalty) are tried in pass 2
+        if score >= 2:
+            continue
         try:
-            if provider == "gemini":
-                if tools:
-                    # _call_gemini does not implement function/tool calling —
-                    # falling through here would silently answer without
-                    # searching. Skip it and let another provider (or the
-                    # final error) handle a tool-enabled request.
-                    last_error = ProviderError("gemini: tool calling not supported, skipping")
-                    logger.warning("gemini: skipped, tools requested but not supported by this provider")
-                    continue
-                return _call_gemini(messages, timeout, stream=stream)
-            elif provider in OPENAI_STYLE:
-                return _call_openai_style(provider, messages, client_body, tools, timeout, stream=stream)
+            if name == "gemini":
+                return _call_gemini(msgs, timeout, stream=stream)
+            return _call_openai_style(name, msgs, client_body, use_tools, timeout, stream=stream)
         except (ProviderError, requests.RequestException) as e:
-            last_error = e
-            logger.error(f"Provider {provider} failed: {e}")
+            errors.append(f"{name}: {e}")
+            logger.error(f"Provider {name} failed: {e}")
             continue
 
-    raise ProviderError(f"All providers/keys failed. Last error: {last_error}")
+    # --- Pass 2: media fallback — convert remote URLs to data URLs ---
+    if has_media(messages) and not stream:
+        for score, pos, name, msgs, use_tools in ranked:
+            if score < 2 or PROVIDERS[name]["media"]:
+                continue
+            try:
+                converted = _media_messages_to_data_urls(messages)
+                logger.warning(f"native media provider(s) unavailable; trying {name} with data-URL conversion")
+                return _call_openai_style(name, converted, client_body, use_tools, timeout, stream=stream)
+            except (ProviderError, requests.RequestException) as e:
+                errors.append(f"{name} (media fallback): {e}")
+                logger.error(f"Provider {name} media fallback failed: {e}")
+                continue
+            except ProviderError as e:
+                errors.append(f"media conversion: {e}")
+
+    # --- Pass 3: tool fallback — strip tools, answer without them ---
+    # (only reached when every tool-capable provider is dead)
+    if tools:
+        for score, pos, name, msgs, use_tools in ranked:
+            if use_tools:
+                continue  # already tried in pass 1
+            try:
+                logger.warning(f"all tool-capable providers unavailable; trying {name} without tools")
+                if name == "gemini":
+                    return _call_gemini(messages, timeout, stream=stream)
+                return _call_openai_style(name, messages, client_body, None, timeout, stream=stream)
+            except (ProviderError, requests.RequestException) as e:
+                errors.append(f"{name} (no-tools fallback): {e}")
+                logger.error(f"Provider {name} no-tools fallback failed: {e}")
+                continue
+
+    raise ProviderError("All providers/keys failed -> " + " | ".join(errors))
 
 
 # =========================================================================
@@ -918,19 +1094,68 @@ def web_search(query: str, max_results: int = 5):
 TOOL_IMPLEMENTATIONS = {"web_search": web_search}
 
 
+def _inject_tavily_results(messages: list, query: str, max_results: int = 5) -> list:
+    """Run a Tavily search and inject the results into the conversation as
+    context, so the model can answer with live data even when no provider
+    is available to do native tool-calling."""
+    try:
+        results = web_search(query, max_results=max_results)
+        if not results:
+            return messages
+        lines = ["Live web search results (use these to answer):"]
+        for r in results:
+            snippet = (r.get("content") or "")[:400]
+            lines.append(f'- {r.get("title")}\n  {r.get("url")}\n  {snippet}')
+        context = "\n\n".join(lines)
+        injected = list(messages)
+        injected.insert(-1, {"role": "system", "content": context})
+        return injected
+    except Exception as e:
+        logger.warning(f"Tavily pre-search failed: {e}")
+        return messages
+
+
 def run_agentic_completion(messages: list, client_body: dict = None, web_search_enabled: bool = True, stream: bool = False):
     """Model -> tool calls -> results -> model, until no more tool calls or
-    MAX_TOOL_ITERATIONS is hit. If stream=True, only streams the final iteration."""
+    MAX_TOOL_ITERATIONS is hit.
+
+    If no provider can serve the tool-enabled request, falls back to:
+      1. Tavily pre-search — search the user's question first, inject results
+         as context, then call the model without tools.
+      2. Plain no-tools completion if Tavily is also unavailable.
+    """
     tools = [WEB_SEARCH_TOOL_SCHEMA] if web_search_enabled else None
     working = list(messages)
+    degraded = False
 
     for iteration in range(MAX_TOOL_ITERATIONS):
         is_final = (iteration == MAX_TOOL_ITERATIONS - 1)
-        should_stream = stream and is_final
+        should_stream = stream and is_final and not degraded
 
-        result = call_model(working, client_body=client_body, tools=tools, stream=should_stream)
+        try:
+            result = call_model(working, client_body=client_body, tools=tools, stream=should_stream)
+        except ProviderError as e:
+            if not tools:
+                raise
+            # No provider could serve the tool-enabled request.
+            # Fall back to Tavily pre-search instead of returning a 502.
+            logger.warning(f"Tool-enabled call failed ({e}); falling back to Tavily pre-search")
+            degraded = True
 
-        if should_stream and "stream" in result:
+            # Extract the user's last message as the search query
+            last_user = ""
+            for m in reversed(working):
+                if m.get("role") == "user":
+                    c = m.get("content")
+                    last_user = c if isinstance(c, str) else ""
+                    break
+
+            if last_user:
+                working = _inject_tavily_results(working, last_user)
+
+            result = call_model(working, client_body=client_body, tools=None, stream=False)
+
+        if should_stream and "stream" in result and not degraded:
             # Return streaming response for final iteration
             return {
                 "stream": result["stream"],
@@ -939,7 +1164,10 @@ def run_agentic_completion(messages: list, client_body: dict = None, web_search_
             }
 
         if not result.get("tool_calls"):
-            return {"content": result["content"], "provider": result["provider"], "streaming": False}
+            out = {"content": result["content"], "provider": result["provider"], "streaming": False}
+            if degraded:
+                out["web_search_degraded"] = True
+            return out
 
         working.append({"role": "assistant", "content": result.get("content") or ""})
         for call in result["tool_calls"]:
@@ -955,7 +1183,10 @@ def run_agentic_completion(messages: list, client_body: dict = None, web_search_
                 tool_output = {"error": str(e)}
             working.append({"role": "tool", "name": fn_name, "content": json.dumps(tool_output)})
 
-    return {"content": "I wasn't able to finish that within the tool-call limit.", "provider": None, "streaming": False}
+    out = {"content": "I wasn't able to finish that within the tool-call limit.", "provider": None, "streaming": False}
+    if degraded:
+        out["web_search_degraded"] = True
+    return out
 
 
 # =========================================================================
@@ -1282,6 +1513,8 @@ def create_app():
             "_provider_used": result["provider"],
             "usage": {"prompt_tokens_est": tokens_in, "completion_tokens_est": tokens_out},
         }
+        if result.get("web_search_degraded"):
+            payload["_web_search_degraded"] = True
         return payload, 200, count
 
     def sse_response(stream_data, provider):
