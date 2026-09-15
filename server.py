@@ -484,6 +484,23 @@ def _get_reasoning_params(provider: str, client_body: dict) -> dict:
     return {}
 
 
+def _error_detail(resp) -> str:
+    """Pull the real error message out of a provider's response body instead
+    of the generic 'NNN Client Error' text that raise_for_status() gives."""
+    try:
+        data = resp.json()
+        msg = (
+            (data.get("error") or {}).get("message")
+            if isinstance(data.get("error"), dict)
+            else data.get("error") or data.get("message")
+        )
+        if msg:
+            return str(msg)[:300]
+        return json.dumps(data)[:300]
+    except Exception:
+        return (resp.text or "")[:300]
+
+
 def _call_openai_style(provider: str, messages: list, client_body: dict, tools, timeout: int, stream: bool = False):
     cfg = OPENAI_STYLE[provider]
     keys = [os.environ.get(e, d) for e, d in zip(cfg["api_key_envs"], cfg["api_key_defaults"])]
@@ -525,7 +542,7 @@ def _call_openai_style(provider: str, messages: list, client_body: dict, tools, 
             latency = (dt.datetime.now() - start_time).total_seconds() * 1000
 
             if resp.status_code == 429:
-                last_error = f"{provider}: rate limited on key {_hash_key(key)}"
+                last_error = f"{provider}: rate limited on key {_hash_key(key)} — {_error_detail(resp)}"
                 mark_key_down(provider, key, last_error, cooldown_seconds=60)
                 logger.warning(f"{provider}: 429 on key {_hash_key(key)}, cooling down 60s")
                 continue
@@ -533,16 +550,25 @@ def _call_openai_style(provider: str, messages: list, client_body: dict, tools, 
                 # Key is invalid/revoked/restricted -- not a transient error.
                 # Long cooldown so we fail fast and clearly instead of
                 # hammering a dead key on every request.
-                last_error = f"{provider}: key {_hash_key(key)} rejected with {resp.status_code} (invalid or restricted key)"
+                last_error = f"{provider}: key {_hash_key(key)} rejected with {resp.status_code} — {_error_detail(resp)}"
                 mark_key_down(provider, key, last_error, cooldown_seconds=6 * 3600)
-                logger.error(f"{provider}: {resp.status_code} on key {_hash_key(key)} -- key invalid, cooling down 6h")
+                logger.error(f"{provider}: {resp.status_code} on key {_hash_key(key)} -- {_error_detail(resp)}")
                 continue
             if resp.status_code >= 500:
-                last_error = f"{provider}: server error {resp.status_code}"
+                last_error = f"{provider}: server error {resp.status_code} — {_error_detail(resp)}"
                 mark_key_down(provider, key, last_error, cooldown_seconds=30)
                 logger.warning(f"{provider}: {resp.status_code} on key {_hash_key(key)}")
                 continue
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                # Any other 4xx (400, 404, 422...) is almost always a bad
+                # request (e.g. this model doesn't support image input) --
+                # not a dead key. Surface the real reason, and use a short
+                # cooldown since retrying the *same* key with a *different*
+                # request could well work.
+                last_error = f"{provider}: {resp.status_code} — {_error_detail(resp)}"
+                mark_key_down(provider, key, last_error, cooldown_seconds=5)
+                logger.error(f"{provider}: {resp.status_code} on key {_hash_key(key)} -- {_error_detail(resp)}")
+                continue
 
             if stream:
                 # Return the streaming response object
@@ -830,21 +856,25 @@ def _call_gemini(messages: list, timeout: int, stream: bool = False):
             latency = (dt.datetime.now() - start_time).total_seconds() * 1000
 
             if resp.status_code == 429:
-                last_error = f"gemini: rate limited on key {_hash_key(key)}"
+                last_error = f"gemini: rate limited on key {_hash_key(key)} — {_error_detail(resp)}"
                 mark_key_down("gemini", key, last_error, cooldown_seconds=60)
                 logger.warning(f"gemini: 429 on key {_hash_key(key)}")
                 continue
             if resp.status_code in (401, 403):
-                last_error = f"gemini: key {_hash_key(key)} rejected with {resp.status_code} (invalid or restricted key)"
+                last_error = f"gemini: key {_hash_key(key)} rejected with {resp.status_code} — {_error_detail(resp)}"
                 mark_key_down("gemini", key, last_error, cooldown_seconds=6 * 3600)
-                logger.error(f"gemini: {resp.status_code} on key {_hash_key(key)} -- key invalid, cooling down 6h")
+                logger.error(f"gemini: {resp.status_code} on key {_hash_key(key)} -- {_error_detail(resp)}")
                 continue
             if resp.status_code >= 500:
-                last_error = f"gemini: server error {resp.status_code}"
+                last_error = f"gemini: server error {resp.status_code} — {_error_detail(resp)}"
                 mark_key_down("gemini", key, last_error, cooldown_seconds=30)
                 logger.warning(f"gemini: {resp.status_code} on key {_hash_key(key)}")
                 continue
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                last_error = f"gemini: {resp.status_code} — {_error_detail(resp)}"
+                mark_key_down("gemini", key, last_error, cooldown_seconds=5)
+                logger.error(f"gemini: {resp.status_code} on key {_hash_key(key)} -- {_error_detail(resp)}")
+                continue
 
             if stream:
                 logger.info(f"gemini: streaming started, key {_hash_key(key)}, latency {latency:.0f}ms")
