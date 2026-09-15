@@ -377,7 +377,7 @@ OPENAI_STYLE = {
             "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",
             "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",
         ],
-        "model": os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile"),
+        "model": os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b"),
         "extra_body": {},
         "supports_reasoning": True,
     },
@@ -399,7 +399,7 @@ OPENAI_STYLE = {
             "ccd29e152e6941098d7e9e1fd91f24a1.thzU8g4LLNVm6qea",
             "f6bc4aac8cfe425cadde84bba181710e.wX0Wm0I8l3YDihGy",
         ],
-        "model": os.environ.get("ZAI_MODEL", "glm-4.5-flash"),
+        "model": os.environ.get("ZAI_MODEL", "glm-4.7-flash"),
         "extra_body": {"thinking": {"type": "disabled"}},
         "supports_reasoning": False,
     },
@@ -410,7 +410,7 @@ GEMINI_API_KEY_DEFAULTS = [
     "AQ.Ab8RN6Kq43fqm482ux_6BD71H67SjJlBjE4qbqY94AGUW1JyLw",
     "AIzaSyBRB2XWuUT-E_X0D8F7B1YTdjrkMIRMBRY",
 ]
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite")
 
 PASSTHROUGH_PARAMS = ("temperature", "top_p", "top_k", "max_tokens", "stop", "seed",
                       "presence_penalty", "frequency_penalty", "response_format")
@@ -811,6 +811,14 @@ def call_model(messages: list, client_body: dict = None, tools=None, timeout: in
     for provider in order:
         try:
             if provider == "gemini":
+                if tools:
+                    # _call_gemini does not implement function/tool calling —
+                    # falling through here would silently answer without
+                    # searching. Skip it and let another provider (or the
+                    # final error) handle a tool-enabled request.
+                    last_error = ProviderError("gemini: tool calling not supported, skipping")
+                    logger.warning("gemini: skipped, tools requested but not supported by this provider")
+                    continue
                 return _call_gemini(messages, timeout, stream=stream)
             elif provider in OPENAI_STYLE:
                 return _call_openai_style(provider, messages, client_body, tools, timeout, stream=stream)
