@@ -1743,7 +1743,8 @@ response = requests.post(
     try {
       const data = await postAuth('/auth/signup', {email, password});
       consoleState.sessionToken = data.token;
-      sessionStorage.setItem('sentry_session_token', data.token);
+      localStorage.setItem('sentry_session_token', data.token);
+      localStorage.setItem('sentry_session_email', email);
       enterConsole(email);
       await loadConsoleFromServer();
     } catch(e) {
@@ -1803,7 +1804,8 @@ response = requests.post(
     try {
       const data = await postAuth('/auth/signin', {email, password});
       consoleState.sessionToken = data.token;
-      sessionStorage.setItem('sentry_session_token', data.token);
+      localStorage.setItem('sentry_session_token', data.token);
+      localStorage.setItem('sentry_session_email', email);
       enterConsole(email);
       await loadConsoleFromServer();
     } catch(e) {
@@ -1853,7 +1855,18 @@ response = requests.post(
     dailyCap: 3000,
     usageHistory: [0, 0, 0, 0, 0, 0, 0], // real data comes from GET /console/usage; never fake numbers here
   };
-  consoleState.sessionToken = sessionStorage.getItem('sentry_session_token') || null;
+  consoleState.sessionToken = localStorage.getItem('sentry_session_token') || null;
+
+  // Persistent sign-in: if a token from a previous visit is already stored,
+  // skip the signed-out landing page and go straight into the console.
+  // loadConsoleFromServer() still validates the token against the backend —
+  // if it's actually expired/invalid, that function already clears storage
+  // and redirects to signin with a clear message, so this degrades safely.
+  if(consoleState.sessionToken){
+    const savedEmail = localStorage.getItem('sentry_session_email');
+    enterConsole(savedEmail);
+    loadConsoleFromServer();
+  }
 
   function authHeaders(){
     return consoleState.sessionToken ? {'Authorization': 'Bearer ' + consoleState.sessionToken} : {};
@@ -1878,7 +1891,8 @@ response = requests.post(
       // Catch it here instead and force a clean re-sign-in.
       if(keysResp.status === 401 || usageResp.status === 401){
         consoleState.sessionToken = null;
-        sessionStorage.removeItem('sentry_session_token');
+        localStorage.removeItem('sentry_session_token');
+        localStorage.removeItem('sentry_session_email');
         go('signin');
         showFormError('si-session-msg', 'Your session has expired. Please sign in again.');
         return;
@@ -2364,7 +2378,8 @@ print(response.json())`;
   function signOutOfConsole(){
     if(confirm('Sign out of the console?')){
       consoleState.sessionToken = null;
-      sessionStorage.removeItem('sentry_session_token');
+      localStorage.removeItem('sentry_session_token');
+      localStorage.removeItem('sentry_session_email');
       go('landing');
     }
   }
