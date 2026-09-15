@@ -1,32 +1,23 @@
 """
-Fluid Intelligence backend — rebuilt single-file version.
+Fluid Intelligence backend — updated version.
 Run:  gunicorn main:app   (or `python main.py` locally)
 
-Rebuild notes (vs. the version that 401'd fresh sessions):
-- Token issue/verify is now demonstrably consistent (one secret, one function,
-  timezone-aware datetimes, no PyJWT deprecation edge cases).
-- 401s now say WHICH failure happened: unauthorized / session_expired /
-  invalid_token — no more guessing.
-- Added GET /auth/session (validate stored token + get account email — this
-  is what powers a *safe* auto sign-in after page refresh).
-- Added GET /version so you can always confirm which build Render is serving.
-- Added GET /healthz for Render health checks.
-- Rate-limit headers (X-RateLimit-Limit/Remaining/Reset) are now actually set
-  on responses — the docs always promised them, the old code never sent them.
-  429s include Retry-After (seconds until midnight UTC reset).
-- stream:true now returns a valid SSE response (single-chunk + [DONE]) instead
-  of being silently ignored. Token-by-token streaming is noted as TODO.
-- usage_counters.tokens_out is now actually written (old code computed it and
-  dropped it).
-- Schema auto-migrates with ALTER TABLE ... IF NOT EXISTS on boot.
-Secrets stay hardcoded here per project decision. Rotate them by editing this
-file and redeploying.
+Changes in this update:
+- MAX_INPUT_TOKENS raised to 12000
+- Real SSE streaming from providers (not single-chunk shim)
+- Reasoning effort param support (Groq)
+- Response format validation with retry
+- Structured request logging
+- Per-key cooldowns (not global provider cooldowns)
+- Cloudinary URL support for images/videos
+- File text extraction (PDF via PyMuPDF/pdfminer/pdftotext, DOCX, TXT/MD/CSV)
 """
 
 import os
 import json
 import secrets
 import re
+import logging
 import datetime as dt
 from datetime import timezone
 from contextlib import contextmanager
@@ -34,16 +25,26 @@ from contextlib import contextmanager
 import bcrypt
 import jwt
 import requests
-from flask import Flask, request, jsonify, Response, g
+from flask import Flask, request, jsonify, Response, g, stream_with_context
 from flask_cors import CORS
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
 
 # =========================================================================
+# LOGGING
+# =========================================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# =========================================================================
 # CONFIG
 # =========================================================================
 
-APP_VERSION = os.environ.get("APP_VERSION", "rebuild-2026-09-14")
+APP_VERSION = os.environ.get("APP_VERSION", "update-2026-09-15")
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
@@ -55,12 +56,14 @@ SESSION_HOURS = 24 * 7
 EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 DAILY_REQUEST_CAP = int(os.environ.get("DAILY_REQUEST_CAP", "3000"))
-MAX_INPUT_TOKENS = int(os.environ.get("MAX_INPUT_TOKENS", "8000"))
+MAX_INPUT_TOKENS = int(os.environ.get("MAX_INPUT_TOKENS", "12000"))  # Raised from 8000
 MAX_TOOL_ITERATIONS = 5
 
-# Open CORS so a Vercel URL mismatch can never be the cause of anything.
-# Tighten to your real domain once the app is stable.
 FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "*")
+
+# Cloudinary config (for image/video uploads)
+CLOUDINARY_CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME", "")
+CLOUDINARY_UPLOAD_PRESET = os.environ.get("CLOUDINARY_UPLOAD_PRESET", "")
 
 # =========================================================================
 # DATABASE
@@ -101,12 +104,27 @@ CREATE TABLE IF NOT EXISTS backend_status (
     unavailable_until  TIMESTAMPTZ,
     last_error         TEXT
 );
+
+-- Per-key cooldown tracking
+CREATE TABLE IF NOT EXISTS key_status (
+    provider     TEXT NOT NULL,
+    key_hash     TEXT NOT NULL,
+    unavailable_until TIMESTAMPTZ,
+    last_error   TEXT,
+    PRIMARY KEY (provider, key_hash)
+);
 """
 
-# idempotent migrations for databases created by older versions of this app
 MIGRATION_SQL = """
 ALTER TABLE usage_counters ADD COLUMN IF NOT EXISTS tokens_in INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE usage_counters ADD COLUMN IF NOT EXISTS tokens_out INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS key_status (
+    provider     TEXT NOT NULL,
+    key_hash     TEXT NOT NULL,
+    unavailable_until TIMESTAMPTZ,
+    last_error   TEXT,
+    PRIMARY KEY (provider, key_hash)
+);
 """
 
 
@@ -166,7 +184,7 @@ def create_session_token(user_id: int) -> str:
         "sub": str(user_id),
         "exp": utcnow() + dt.timedelta(hours=SESSION_HOURS),
         "iat": utcnow(),
-        "v": 1,  # token format version — bump if you ever change signing
+        "v": 1,
     }
     token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
     return token.decode() if isinstance(token, bytes) else token
@@ -206,7 +224,7 @@ def require_session():
 
 
 def generate_api_key():
-    raw = secrets.token_hex(24)  # 48 hex chars
+    raw = secrets.token_hex(24)
     full_key = f"sk-sentry-{raw}"
     prefix = f"sk-sentry-{raw[:8]}..."
     key_hash = bcrypt.hashpw(full_key.encode(), bcrypt.gensalt()).decode()
@@ -263,9 +281,6 @@ def get_users_active_key_id(user_id: int):
 # =========================================================================
 
 def check_and_increment_rate_limit(api_key_id: int, tokens_in: int = 0) -> int:
-    """Increments today's counter and RETURNS the new count (caller compares
-    to the cap). Always records, so usage stays accurate even on the
-    request that tips over the limit."""
     today = dt.date.today()
     with get_cursor(commit=True) as cur:
         cur.execute(
@@ -298,26 +313,37 @@ def set_rate_limit_headers(count: int):
 
 
 # =========================================================================
-# BACKEND COOLDOWNS
+# BACKEND COOLDOWNS — PER KEY
 # =========================================================================
 
-def mark_backend_down(name: str, error, cooldown_seconds: int = 30):
+def _hash_key(key: str) -> str:
+    """Create a short hash for tracking without exposing the key."""
+    import hashlib
+    return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
+def mark_key_down(provider: str, key: str, error, cooldown_seconds: int = 30):
+    """Mark a specific key as cooling down, not the whole provider."""
+    key_hash = _hash_key(key)
     until = utcnow() + dt.timedelta(seconds=cooldown_seconds)
     with get_cursor(commit=True) as cur:
         cur.execute(
-            """INSERT INTO backend_status (backend_name, unavailable_until, last_error)
-               VALUES (%s, %s, %s)
-               ON CONFLICT (backend_name) DO UPDATE
+            """INSERT INTO key_status (provider, key_hash, unavailable_until, last_error)
+               VALUES (%s, %s, %s, %s)
+               ON CONFLICT (provider, key_hash) DO UPDATE
                SET unavailable_until = EXCLUDED.unavailable_until,
                    last_error = EXCLUDED.last_error""",
-            (name, until, str(error)[:500]),
+            (provider, key_hash, until, str(error)[:500]),
         )
 
 
-def is_backend_available(name: str) -> bool:
+def is_key_available(provider: str, key: str) -> bool:
+    """Check if a specific key is available."""
+    key_hash = _hash_key(key)
     with get_cursor() as cur:
         cur.execute(
-            "SELECT unavailable_until FROM backend_status WHERE backend_name = %s", (name,)
+            "SELECT unavailable_until FROM key_status WHERE provider = %s AND key_hash = %s",
+            (provider, key_hash)
         )
         row = cur.fetchone()
     if not row or not row["unavailable_until"]:
@@ -325,12 +351,23 @@ def is_backend_available(name: str) -> bool:
     return utcnow() > row["unavailable_until"]
 
 
+# Keep old functions for backward compatibility but make them no-ops
+def mark_backend_down(name: str, error, cooldown_seconds: int = 30):
+    """Deprecated: use mark_key_down instead."""
+    pass
+
+
+def is_backend_available(name: str) -> bool:
+    """Deprecated: use is_key_available instead."""
+    return True
+
+
 # =========================================================================
 # MODEL PROVIDERS
 # =========================================================================
 
 DEFAULT_ORDER = ["groq", "mistral", "zai", "gemini"]
-MEDIA_CAPABLE_ORDER = ["gemini"]  # only backend with free-tier image support
+MEDIA_CAPABLE_ORDER = ["gemini"]
 
 OPENAI_STYLE = {
     "groq": {
@@ -342,6 +379,7 @@ OPENAI_STYLE = {
         ],
         "model": os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile"),
         "extra_body": {},
+        "supports_reasoning": True,
     },
     "mistral": {
         "base_url": "https://api.mistral.ai/v1/chat/completions",
@@ -352,6 +390,7 @@ OPENAI_STYLE = {
         ],
         "model": os.environ.get("MISTRAL_MODEL", "mistral-large-latest"),
         "extra_body": {},
+        "supports_reasoning": False,
     },
     "zai": {
         "base_url": "https://api.z.ai/api/paas/v4/chat/completions",
@@ -361,9 +400,8 @@ OPENAI_STYLE = {
             "f6bc4aac8cfe425cadde84bba181710e.wX0Wm0I8l3YDihGy",
         ],
         "model": os.environ.get("ZAI_MODEL", "glm-4.5-flash"),
-        # GLM thinking-on would burn the whole max_tokens budget before
-        # producing a visible answer — keep it disabled for plain chat.
         "extra_body": {"thinking": {"type": "disabled"}},
+        "supports_reasoning": False,
     },
 }
 
@@ -374,7 +412,6 @@ GEMINI_API_KEY_DEFAULTS = [
 ]
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
 
-# sampling params we forward to OpenAI-style providers when the client sets them
 PASSTHROUGH_PARAMS = ("temperature", "top_p", "top_k", "max_tokens", "stop", "seed",
                       "presence_penalty", "frequency_penalty", "response_format")
 
@@ -403,10 +440,22 @@ def _forward_sampling_params(body: dict, client_body: dict):
             body[p] = client_body[p]
 
 
-def _call_openai_style(provider: str, messages: list, client_body: dict, tools, timeout: int):
-    if not is_backend_available(provider):
-        raise ProviderError(f"{provider}: cooling down after a recent failure")
+def _get_reasoning_params(provider: str, client_body: dict) -> dict:
+    """Extract reasoning params for providers that support them."""
+    reasoning = client_body.get("reasoning") or {}
+    if not reasoning.get("enabled"):
+        return {}
 
+    effort = reasoning.get("effort", "medium")
+
+    if provider == "groq":
+        # Groq supports reasoning_effort
+        return {"reasoning_effort": effort}
+
+    return {}
+
+
+def _call_openai_style(provider: str, messages: list, client_body: dict, tools, timeout: int, stream: bool = False):
     cfg = OPENAI_STYLE[provider]
     keys = [os.environ.get(e, d) for e, d in zip(cfg["api_key_envs"], cfg["api_key_defaults"])]
     keys = [k for k in keys if k]
@@ -415,41 +464,118 @@ def _call_openai_style(provider: str, messages: list, client_body: dict, tools, 
 
     body = {"model": cfg["model"], "messages": messages}
     _forward_sampling_params(body, client_body or {})
+
+    # Add reasoning params if supported
+    if cfg.get("supports_reasoning"):
+        body.update(_get_reasoning_params(provider, client_body or {}))
+
     if tools:
         body["tools"] = tools
     if cfg.get("extra_body"):
         body.update(cfg["extra_body"])
 
+    if stream:
+        body["stream"] = True
+
     last_error = None
     for key in keys:
+        # Check per-key cooldown
+        if not is_key_available(provider, key):
+            logger.info(f"{provider}: key {_hash_key(key)} cooling down, skipping")
+            continue
+
         try:
+            start_time = dt.datetime.now()
             resp = requests.post(
                 cfg["base_url"],
                 headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
                 json=body,
                 timeout=timeout,
+                stream=stream,
             )
+            latency = (dt.datetime.now() - start_time).total_seconds() * 1000
+
             if resp.status_code == 429:
-                last_error = f"{provider}: rate limited on this key"
+                last_error = f"{provider}: rate limited on key {_hash_key(key)}"
+                mark_key_down(provider, key, last_error, cooldown_seconds=60)
+                logger.warning(f"{provider}: 429 on key {_hash_key(key)}, cooling down 60s")
                 continue
             if resp.status_code >= 500:
                 last_error = f"{provider}: server error {resp.status_code}"
+                mark_key_down(provider, key, last_error, cooldown_seconds=30)
+                logger.warning(f"{provider}: {resp.status_code} on key {_hash_key(key)}")
                 continue
             resp.raise_for_status()
+
+            if stream:
+                # Return the streaming response object
+                logger.info(f"{provider}: streaming started, key {_hash_key(key)}, latency {latency:.0f}ms")
+                return {
+                    "stream": resp.iter_lines(),
+                    "provider": provider,
+                    "key_hash": _hash_key(key),
+                }
+
             data = resp.json()
             choice = data["choices"][0]["message"]
+
+            usage = data.get("usage", {})
+            logger.info(f"{provider}: success, key {_hash_key(key)}, latency {latency:.0f}ms, tokens {usage.get('prompt_tokens', '?')}/{usage.get('completion_tokens', '?')}")
+
             return {
                 "content": choice.get("content"),
                 "tool_calls": choice.get("tool_calls"),
                 "provider": provider,
-                "usage": data.get("usage", {}),
+                "usage": usage,
             }
         except requests.RequestException as e:
             last_error = f"{provider}: {e}"
+            mark_key_down(provider, key, last_error, cooldown_seconds=30)
+            logger.error(f"{provider}: error on key {_hash_key(key)}: {e}")
             continue
 
-    mark_backend_down(provider, last_error)
     raise ProviderError(last_error or f"{provider}: all keys failed")
+
+
+def _fetch_media_as_base64(url: str, max_size_mb: int = 5) -> tuple:
+    """Fetch a media URL and return (base64_data, mime_type)."""
+    try:
+        resp = requests.get(url, timeout=30, stream=True)
+        resp.raise_for_status()
+
+        # Check content length if available
+        content_length = resp.headers.get('content-length')
+        if content_length and int(content_length) > max_size_mb * 1024 * 1024:
+            raise ProviderError(f"Media too large: {int(content_length) / 1024 / 1024:.1f}MB > {max_size_mb}MB")
+
+        # Download with size limit
+        chunks = []
+        total_size = 0
+        for chunk in resp.iter_content(chunk_size=8192):
+            chunks.append(chunk)
+            total_size += len(chunk)
+            if total_size > max_size_mb * 1024 * 1024:
+                raise ProviderError(f"Media too large: >{max_size_mb}MB")
+
+        data = b''.join(chunks)
+        import base64
+        b64 = base64.b64encode(data).decode('utf-8')
+
+        # Determine mime type from URL or content-type header
+        content_type = resp.headers.get('content-type', '').split(';')[0]
+        if not content_type:
+            # Guess from URL extension
+            ext = url.split('.')[-1].lower().split('?')[0]
+            mime_map = {
+                'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png',
+                'gif': 'image/gif', 'webp': 'image/webp', 'mp4': 'video/mp4',
+                'webm': 'video/webm', 'mov': 'video/quicktime'
+            }
+            content_type = mime_map.get(ext, 'application/octet-stream')
+
+        return b64, content_type
+    except requests.RequestException as e:
+        raise ProviderError(f"Failed to fetch media: {e}")
 
 
 def _messages_to_gemini_contents(messages: list):
@@ -463,7 +589,7 @@ def _messages_to_gemini_contents(messages: list):
     for m in messages:
         if m["role"] == "system":
             continue
-        role = "model" if m["role"] == "assistant" else "user"  # 'tool' -> user
+        role = "model" if m["role"] == "assistant" else "user"
         content = m["content"]
         parts = []
 
@@ -486,50 +612,195 @@ def _messages_to_gemini_contents(messages: list):
                     if url.startswith("data:"):
                         mime, _, b64data = url.partition(";base64,")
                         parts.append({"inline_data": {"mime_type": mime.replace("data:", ""), "data": b64data}})
-                    # hosted (non-data-URI) images are not translated yet
+                    elif url.startswith("https://"):
+                        # Fetch hosted image (e.g., Cloudinary)
+                        try:
+                            b64, mime = _fetch_media_as_base64(url, max_size_mb=5)
+                            parts.append({"inline_data": {"mime_type": mime, "data": b64}})
+                        except ProviderError as e:
+                            logger.warning(f"Failed to fetch image: {e}")
+                            parts.append({"text": f"[Image unavailable: {str(e)}]"})
+                elif block.get("type") == "video_url":
+                    url = block.get("video_url", {}).get("url", "")
+                    if url.startswith("https://"):
+                        try:
+                            b64, mime = _fetch_media_as_base64(url, max_size_mb=50)
+                            parts.append({"inline_data": {"mime_type": mime, "data": b64}})
+                        except ProviderError as e:
+                            logger.warning(f"Failed to fetch video: {e}")
+                            parts.append({"text": f"[Video unavailable: {str(e)}]"})
+                elif block.get("type") == "file_url":
+                    # Handle file attachments - extract text
+                    url = block.get("file_url", {}).get("url", "")
+                    if url.startswith("https://"):
+                        try:
+                            text_content = _extract_text_from_url(url)
+                            if prefix and role == "user" and not first_text_done:
+                                text_content = prefix + text_content
+                                prefix = ""
+                            first_text_done = True
+                            parts.append({"text": text_content})
+                        except Exception as e:
+                            logger.warning(f"Failed to extract file text: {e}")
+                            parts.append({"text": f"[File content unavailable: {str(e)}]"})
 
         contents.append({"role": role, "parts": parts})
 
     return contents
 
 
-def _call_gemini(messages: list, timeout: int):
-    if not is_backend_available("gemini"):
-        raise ProviderError("gemini: cooling down after a recent failure")
+def _extract_text_from_url(url: str) -> str:
+    """Extract text from a file URL (PDF, DOCX, TXT, etc.)."""
+    try:
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
+        content_type = resp.headers.get('content-type', '').lower()
 
+        # Determine file type from URL or content-type
+        ext = url.split('.')[-1].lower().split('?')[0]
+
+        if 'pdf' in content_type or ext == 'pdf':
+            return _extract_pdf_text(resp.content)
+        elif 'word' in content_type or ext in ('docx', 'doc'):
+            return _extract_docx_text(resp.content)
+        elif 'text' in content_type or ext in ('txt', 'md', 'csv'):
+            return resp.text[:100000]  # Limit to 100KB of text
+        else:
+            # Try to decode as text
+            try:
+                return resp.text[:100000]
+            except:
+                return "[Unsupported file type]"
+    except requests.RequestException as e:
+        raise ProviderError(f"Failed to fetch file: {e}")
+
+
+def _extract_pdf_text(content: bytes) -> str:
+    """Extract text from PDF content using available libraries."""
+    # Try PyMuPDF first
+    try:
+        import fitz  # PyMuPDF
+        doc = fitz.open(stream=content, filetype="pdf")
+        text = ""
+        for page in doc:
+            text += page.get_text()
+            if len(text) > 100000:  # Limit output
+                text += "\n\n[content truncated]"
+                break
+        doc.close()
+        return text
+    except ImportError:
+        pass
+
+    # Try pdfminer
+    try:
+        from pdfminer.high_level import extract_text
+        import io
+        text = extract_text(io.BytesIO(content))
+        return text[:100000]
+    except ImportError:
+        pass
+
+    # Fall back to pdftotext command
+    try:
+        import subprocess
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as f:
+            f.write(content)
+            tmp_path = f.name
+
+        result = subprocess.run(['pdftotext', tmp_path, '-'], capture_output=True, text=True, timeout=30)
+        os.unlink(tmp_path)
+
+        if result.returncode == 0:
+            return result.stdout[:100000]
+    except (subprocess.SubprocessError, FileNotFoundError):
+        pass
+
+    return "[PDF text extraction not available. Install PyMuPDF or pdfminer.six, or ensure pdftotext is installed]"
+
+
+def _extract_docx_text(content: bytes) -> str:
+    """Extract text from DOCX content."""
+    try:
+        import docx
+        import io
+        doc = docx.Document(io.BytesIO(content))
+        text = "\n".join([para.text for para in doc.paragraphs])
+        return text[:100000]
+    except ImportError:
+        return "[DOCX support not available. Install python-docx or convert to PDF/TXT]"
+
+
+def _call_gemini(messages: list, timeout: int, stream: bool = False):
     keys = [os.environ.get(e, d) for e, d in zip(GEMINI_API_KEY_ENVS, GEMINI_API_KEY_DEFAULTS)]
     keys = [k for k in keys if k]
     if not keys:
         raise ProviderError("gemini: no API keys configured")
 
     body = {"contents": _messages_to_gemini_contents(messages)}
+
+    # Add streaming config if needed
+    if stream:
+        body["generationConfig"] = {"maxOutputTokens": 8192}
+
     last_error = None
     for key in keys:
+        # Check per-key cooldown
+        if not is_key_available("gemini", key):
+            logger.info(f"gemini: key {_hash_key(key)} cooling down, skipping")
+            continue
+
         try:
+            start_time = dt.datetime.now()
             url = (
                 f"https://generativelanguage.googleapis.com/v1beta/models/"
-                f"{GEMINI_MODEL}:generateContent?key={key}"
+                f"{GEMINI_MODEL}:{'streamGenerateContent' if stream else 'generateContent'}?key={key}"
             )
-            resp = requests.post(url, json=body, timeout=timeout)
+
+            if stream:
+                url += "&alt=sse"
+
+            resp = requests.post(url, json=body, timeout=timeout, stream=stream)
+            latency = (dt.datetime.now() - start_time).total_seconds() * 1000
+
             if resp.status_code == 429:
-                last_error = "gemini: rate limited on this key"
+                last_error = f"gemini: rate limited on key {_hash_key(key)}"
+                mark_key_down("gemini", key, last_error, cooldown_seconds=60)
+                logger.warning(f"gemini: 429 on key {_hash_key(key)}")
                 continue
             if resp.status_code >= 500:
                 last_error = f"gemini: server error {resp.status_code}"
+                mark_key_down("gemini", key, last_error, cooldown_seconds=30)
+                logger.warning(f"gemini: {resp.status_code} on key {_hash_key(key)}")
                 continue
             resp.raise_for_status()
+
+            if stream:
+                logger.info(f"gemini: streaming started, key {_hash_key(key)}, latency {latency:.0f}ms")
+                return {
+                    "stream": resp.iter_lines(),
+                    "provider": "gemini",
+                    "key_hash": _hash_key(key),
+                }
+
             data = resp.json()
             text = data["candidates"][0]["content"]["parts"][0]["text"]
-            return {"content": text, "tool_calls": None, "provider": "gemini", "usage": data.get("usageMetadata", {})}
+
+            usage = data.get("usageMetadata", {})
+            logger.info(f"gemini: success, key {_hash_key(key)}, latency {latency:.0f}ms, tokens {usage.get('promptTokenCount', '?')}/{usage.get('candidatesTokenCount', '?')}")
+
+            return {"content": text, "tool_calls": None, "provider": "gemini", "usage": usage}
         except requests.RequestException as e:
             last_error = f"gemini: {e}"
+            mark_key_down("gemini", key, last_error, cooldown_seconds=30)
+            logger.error(f"gemini: error on key {_hash_key(key)}: {e}")
             continue
 
-    mark_backend_down("gemini", last_error)
     raise ProviderError(last_error or "gemini: all keys failed")
 
 
-def call_model(messages: list, client_body: dict = None, tools=None, timeout: int = 30, order=None):
+def call_model(messages: list, client_body: dict = None, tools=None, timeout: int = 30, order=None, stream: bool = False):
     if order is None:
         if has_media(messages):
             order = MEDIA_CAPABLE_ORDER
@@ -540,14 +811,53 @@ def call_model(messages: list, client_body: dict = None, tools=None, timeout: in
     for provider in order:
         try:
             if provider == "gemini":
-                return _call_gemini(messages, timeout)
+                return _call_gemini(messages, timeout, stream=stream)
             elif provider in OPENAI_STYLE:
-                return _call_openai_style(provider, messages, client_body, tools, timeout)
+                return _call_openai_style(provider, messages, client_body, tools, timeout, stream=stream)
         except (ProviderError, requests.RequestException) as e:
             last_error = e
+            logger.error(f"Provider {provider} failed: {e}")
             continue
 
     raise ProviderError(f"All providers/keys failed. Last error: {last_error}")
+
+
+# =========================================================================
+# RESPONSE FORMAT VALIDATION
+# =========================================================================
+
+def validate_and_fix_json(content: str, response_format: dict, messages: list, client_body: dict, api_key_id: int) -> str:
+    """Validate JSON response, retry once if invalid."""
+    if not response_format:
+        return content
+
+    try:
+        json.loads(content)
+        return content  # Valid JSON
+    except json.JSONDecodeError:
+        pass
+
+    # Retry with stricter prompt
+    logger.info("JSON validation failed, retrying with temperature=0")
+
+    retry_body = dict(client_body or {})
+    retry_body["temperature"] = 0
+
+    # Add system message instructing valid JSON
+    retry_messages = list(messages)
+    retry_messages.insert(0, {
+        "role": "system",
+        "content": "You must respond with valid JSON only. No markdown, no explanation, just pure JSON."
+    })
+
+    try:
+        result = call_model(retry_messages, client_body=retry_body)
+        retry_content = result["content"]
+        json.loads(retry_content)  # Validate
+        return retry_content
+    except (json.JSONDecodeError, ProviderError) as e:
+        logger.error(f"JSON retry failed: {e}")
+        raise ProviderError("Could not produce valid JSON after retry")
 
 
 # =========================================================================
@@ -600,17 +910,28 @@ def web_search(query: str, max_results: int = 5):
 TOOL_IMPLEMENTATIONS = {"web_search": web_search}
 
 
-def run_agentic_completion(messages: list, client_body: dict = None, web_search_enabled: bool = True):
+def run_agentic_completion(messages: list, client_body: dict = None, web_search_enabled: bool = True, stream: bool = False):
     """Model -> tool calls -> results -> model, until no more tool calls or
-    MAX_TOOL_ITERATIONS is hit."""
+    MAX_TOOL_ITERATIONS is hit. If stream=True, only streams the final iteration."""
     tools = [WEB_SEARCH_TOOL_SCHEMA] if web_search_enabled else None
     working = list(messages)
 
-    for _ in range(MAX_TOOL_ITERATIONS):
-        result = call_model(working, client_body=client_body, tools=tools)
+    for iteration in range(MAX_TOOL_ITERATIONS):
+        is_final = (iteration == MAX_TOOL_ITERATIONS - 1)
+        should_stream = stream and is_final
+
+        result = call_model(working, client_body=client_body, tools=tools, stream=should_stream)
+
+        if should_stream and "stream" in result:
+            # Return streaming response for final iteration
+            return {
+                "stream": result["stream"],
+                "provider": result["provider"],
+                "streaming": True,
+            }
 
         if not result.get("tool_calls"):
-            return {"content": result["content"], "provider": result["provider"]}
+            return {"content": result["content"], "provider": result["provider"], "streaming": False}
 
         working.append({"role": "assistant", "content": result.get("content") or ""})
         for call in result["tool_calls"]:
@@ -626,7 +947,41 @@ def run_agentic_completion(messages: list, client_body: dict = None, web_search_
                 tool_output = {"error": str(e)}
             working.append({"role": "tool", "name": fn_name, "content": json.dumps(tool_output)})
 
-    return {"content": "I wasn't able to finish that within the tool-call limit.", "provider": None}
+    return {"content": "I wasn't able to finish that within the tool-call limit.", "provider": None, "streaming": False}
+
+
+# =========================================================================
+# STREAMING HELPERS
+# =========================================================================
+
+def sse_stream_generator(stream_data):
+    """Generate SSE format from provider stream."""
+    try:
+        for line in stream_data:
+            if isinstance(line, bytes):
+                line = line.decode('utf-8')
+            if not line:
+                continue
+            if line.startswith('data: '):
+                # Already SSE format from Gemini
+                yield line + '\n\n'
+            elif line.startswith('{'):
+                # OpenAI-style chunk
+                try:
+                    chunk = json.loads(line)
+                    # Normalize to OpenAI chunk format
+                    if 'choices' in chunk:
+                        yield f"data: {json.dumps(chunk)}\n\n"
+                    else:
+                        # Gemini format - convert
+                        yield f"data: {json.dumps(chunk)}\n\n"
+                except json.JSONDecodeError:
+                    continue
+        yield "data: [DONE]\n\n"
+    except Exception as e:
+        logger.error(f"Stream error: {e}")
+        yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        yield "data: [DONE]\n\n"
 
 
 # =========================================================================
@@ -656,7 +1011,6 @@ def create_app():
 
     @app.get("/version")
     def version():
-        """Hit this after every deploy to confirm Render serves the build you think it is."""
         return jsonify(version=APP_VERSION, python=os.sys.version.split()[0])
 
     @app.get("/stats/public")
@@ -712,9 +1066,6 @@ def create_app():
 
     @app.get("/auth/session")
     def auth_session():
-        """Validate a stored session token and return the account email.
-        This is the endpoint a safe auto-sign-in flow calls on page load:
-        200 -> enter console, 401 -> silently go to sign-in."""
         user_id, err = require_session()
         if err:
             return err
@@ -807,6 +1158,58 @@ def create_app():
 
         return jsonify(requests_today=history[-1], daily_cap=DAILY_REQUEST_CAP, history=history)
 
+    # ---------- Cloudinary upload endpoint ----------
+
+    @app.post("/console/upload")
+    def upload_to_cloudinary():
+        """Upload a file to Cloudinary and return the URL."""
+        user_id, err = require_session()
+        if err:
+            return err
+
+        if 'file' not in request.files:
+            return jsonify(error="no file provided"), 400
+
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify(error="no file selected"), 400
+
+        # Check file size (10MB max)
+        file.seek(0, os.SEEK_END)
+        size = file.tell()
+        file.seek(0)
+        if size > 10 * 1024 * 1024:
+            return jsonify(error="file too large (max 10MB)"), 413
+
+        if not CLOUDINARY_CLOUD_NAME or not CLOUDINARY_UPLOAD_PRESET:
+            return jsonify(error="Cloudinary not configured"), 500
+
+        try:
+            import cloudinary
+            import cloudinary.uploader
+
+            cloudinary.config(
+                cloud_name=CLOUDINARY_CLOUD_NAME,
+                upload_preset=CLOUDINARY_UPLOAD_PRESET
+            )
+
+            result = cloudinary.uploader.upload(
+                file,
+                resource_type="auto",
+                folder="sentry_uploads"
+            )
+
+            return jsonify({
+                "url": result["secure_url"],
+                "public_id": result["public_id"],
+                "resource_type": result["resource_type"],
+                "format": result.get("format"),
+                "bytes": result["bytes"]
+            })
+        except Exception as e:
+            logger.error(f"Cloudinary upload failed: {e}")
+            return jsonify(error=f"upload failed: {str(e)}"), 500
+
     # ---------- completions (shared core, two auth front-ends) ----------
 
     def completion_core(body: dict, api_key_id: int):
@@ -828,12 +1231,37 @@ def create_app():
             return None, 429, count
 
         web_search_enabled = bool((body.get("web_search") or {}).get("enabled"))
+        stream = bool(body.get("stream"))
+
         try:
-            result = run_agentic_completion(messages, client_body=body, web_search_enabled=web_search_enabled)
+            result = run_agentic_completion(
+                messages, 
+                client_body=body, 
+                web_search_enabled=web_search_enabled,
+                stream=stream
+            )
         except ProviderError as e:
+            logger.error(f"Provider error: {e}")
             return {"error": {"message": str(e)}}, 502, count
 
-        tokens_out = estimate_tokens([{"content": result["content"]}])
+        # Handle streaming response
+        if result.get("streaming") and "stream" in result:
+            return {
+                "streaming": True,
+                "stream": result["stream"],
+                "provider": result["provider"],
+            }, 200, count
+
+        # Validate JSON if response_format requested
+        response_format = body.get("response_format")
+        content = result["content"]
+        if response_format:
+            try:
+                content = validate_and_fix_json(content, response_format, messages, body, api_key_id)
+            except ProviderError as e:
+                return {"error": {"message": str(e)}}, 502, count
+
+        tokens_out = estimate_tokens([{"content": content}])
         record_tokens_out(api_key_id, tokens_out)
 
         payload = {
@@ -841,25 +1269,24 @@ def create_app():
             "object": "chat.completion",
             "model": "sentry-1",
             "choices": [
-                {"index": 0, "message": {"role": "assistant", "content": result["content"]}}
+                {"index": 0, "message": {"role": "assistant", "content": content}}
             ],
             "_provider_used": result["provider"],
             "usage": {"prompt_tokens_est": tokens_in, "completion_tokens_est": tokens_out},
         }
         return payload, 200, count
 
-    def sse_shim(payload: dict) -> Response:
-        """Honors stream:true with a valid SSE shape (one chunk + [DONE]).
-        TODO: true token-by-token streaming would require streaming from each
-        upstream provider through the tool loop — out of scope for this rebuild."""
-        chunk = {
-            "id": payload["id"],
-            "object": "chat.completion.chunk",
-            "model": payload["model"],
-            "choices": [{"index": 0, "delta": {"role": "assistant", "content": payload["choices"][0]["message"]["content"]}, "finish_reason": "stop"}],
-        }
-        body = f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n"
-        return Response(body, mimetype="text/event-stream")
+    def sse_response(stream_data, provider):
+        """Create a proper SSE response."""
+        return Response(
+            stream_with_context(sse_stream_generator(stream_data)),
+            mimetype="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "X-Provider-Used": provider,
+            }
+        )
 
     @app.post("/v1/chat/completions")
     def chat_completions():
@@ -870,18 +1297,17 @@ def create_app():
         body = request.get_json(force=True, silent=True) or {}
         payload, status, _ = completion_core(body, identity["api_key_id"])
         if status == 429:
-            return payload  # already a Response with Retry-After
+            return payload
         if status != 200:
             return jsonify(payload), status
-        if body.get("stream"):
-            return sse_shim(payload)
+        if payload.get("streaming"):
+            return sse_response(payload["stream"], payload["provider"])
         return jsonify(payload)
 
     @app.post("/console/playground/chat")
     def playground_chat():
         user_id, err = require_session()
         if err:
-            # console endpoints speak string errors; keep playground consistent
             body, code = err
             return jsonify(error=body.get_json().get("error", "unauthorized")), code
 
@@ -895,6 +1321,8 @@ def create_app():
             return payload
         if status != 200:
             return jsonify(payload), status
+        if payload.get("streaming"):
+            return sse_response(payload["stream"], payload["provider"])
         return jsonify(payload)
 
     return app
