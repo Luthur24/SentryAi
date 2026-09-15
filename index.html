@@ -2534,6 +2534,9 @@ response = requests.post(
           const data = await resp.json();
           const content = data.choices?.[0]?.message?.content || '(no content)';
           pgAppendMessage('assistant', content);
+          if (data._web_search_degraded) {
+            pgAppendMessage('assistant', '⚠️ Live web search was unavailable for this request (all search-capable providers failed) — answered without it.');
+          }
           pgMessages.push({role: 'assistant', content});
         }
       } catch(e) {
