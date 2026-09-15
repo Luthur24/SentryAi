@@ -12,6 +12,24 @@
   })();
   window.API_BASE = "https://sentryai-co22.onrender.com";
 </script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.5/purify.min.js"></script>
+<script>
+  // Render model output as sanitized markdown instead of raw text, so
+  // **bold**, lists, code blocks, links etc. actually display instead of
+  // showing literal asterisks/backticks.
+  function pgRenderMarkdown(text) {
+    try {
+      const rawHtml = marked.parse(text || '', { breaks: true });
+      return DOMPurify.sanitize(rawHtml);
+    } catch (e) {
+      console.error('markdown render failed:', e);
+      // Fall back to escaped plain text so a render error never means a blank bubble
+      const div = document.createElement('div');
+      div.textContent = text || '';
+      return div.innerHTML;
+    }
+  }
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Playfair+Display:ital,wght@1,600;1,700&display=swap" rel="stylesheet">
@@ -2198,9 +2216,10 @@ response = requests.post(
       // Get preview first
       preview = await pgGetFilePreview(file);
 
-      // Upload to Cloudinary for images and videos
-      if (kind === 'image' || kind === 'video') {
+      // Upload to Cloudinary for images, videos, and audio
+      if (kind === 'image' || kind === 'video' || kind === 'audio') {
         try {
+          // Cloudinary files audio under its "video" resource type
           const resourceType = kind === 'image' ? 'image' : 'video';
           url = await pgUploadToCloudinary(file, resourceType);
         } catch (err) {
@@ -2282,15 +2301,26 @@ response = requests.post(
       pgRecordedChunks = [];
       pgMediaRecorder = new MediaRecorder(stream);
       pgMediaRecorder.ondataavailable = ev => pgRecordedChunks.push(ev.data);
-      pgMediaRecorder.onstop = () => {
+      pgMediaRecorder.onstop = async () => {
         const blob = new Blob(pgRecordedChunks, {type: 'audio/webm'});
         const file = new File([blob], `voice-note-${Date.now()}.webm`, {type: 'audio/webm'});
-        pgAttachments.push({kind: 'audio', name: file.name, file, url: null, preview: null, uploading: false});
+        const attachment = {kind: 'audio', name: file.name, file, url: null, preview: null, uploading: true};
+        pgAttachments.push(attachment);
         pgRenderAttachments();
         stream.getTracks().forEach(t => t.stop());
         btn.classList.remove('recording');
         label.textContent = 'Record voice';
         pgCloseAttachMenu();
+
+        try {
+          attachment.url = await pgUploadToCloudinary(file, 'video'); // audio files upload under Cloudinary's video resource type
+        } catch (err) {
+          console.error('Voice note upload failed:', err);
+          alert('Failed to upload voice note: ' + err.message);
+          pgAttachments = pgAttachments.filter(a => a !== attachment);
+        }
+        attachment.uploading = false;
+        pgRenderAttachments();
       };
       pgMediaRecorder.start();
       btn.classList.add('recording');
@@ -2322,7 +2352,7 @@ response = requests.post(
     avatar.textContent = role === 'user' ? 'U' : 'S';
     const bubble = document.createElement('div');
     bubble.className = 'pg-bubble pg-bubble-' + role;
-    bubble.textContent = text;
+    bubble.innerHTML = pgRenderMarkdown(text);
     row.appendChild(avatar);
     row.appendChild(bubble);
     chat.appendChild(row);
@@ -2426,9 +2456,10 @@ response = requests.post(
     let messageContent = text;
     const imageAttachments = pgAttachments.filter(a => a.kind === 'image' && a.url);
     const videoAttachments = pgAttachments.filter(a => a.kind === 'video' && a.url);
+    const audioAttachments = pgAttachments.filter(a => a.kind === 'audio' && a.url);
     const docAttachments = pgAttachments.filter(a => a.kind === 'document' && a.file);
 
-    if (imageAttachments.length > 0 || videoAttachments.length > 0) {
+    if (imageAttachments.length > 0 || videoAttachments.length > 0 || audioAttachments.length > 0) {
       const contentBlocks = [];
       if (text) contentBlocks.push({type: 'text', text});
 
@@ -2443,6 +2474,13 @@ response = requests.post(
         contentBlocks.push({
           type: 'video_url',
           video_url: {url: a.url}
+        });
+      }
+
+      for (const a of audioAttachments) {
+        contentBlocks.push({
+          type: 'audio_url',
+          audio_url: {url: a.url}
         });
       }
 
