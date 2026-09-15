@@ -62,8 +62,12 @@ MAX_TOOL_ITERATIONS = 5
 FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "*")
 
 # Cloudinary config (for image/video uploads)
-CLOUDINARY_CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME", "")
-CLOUDINARY_UPLOAD_PRESET = os.environ.get("CLOUDINARY_UPLOAD_PRESET", "")
+# NOTE: these are server-side only. Never expose CLOUDINARY_API_SECRET to the
+# frontend/browser — anyone who saw it could fully control this Cloudinary account.
+CLOUDINARY_CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME", "ddusfl7pi")
+CLOUDINARY_API_KEY = os.environ.get("CLOUDINARY_API_KEY", "599965682593626")
+CLOUDINARY_API_SECRET = os.environ.get("CLOUDINARY_API_SECRET", "pUcb90_1jtv-rDlHXRRsfDcBK5k")
+CLOUDINARY_UPLOAD_PRESET = os.environ.get("CLOUDINARY_UPLOAD_PRESET", "")  # not needed for signed uploads
 
 # =========================================================================
 # DATABASE
@@ -1420,7 +1424,7 @@ def create_app():
         if size > 10 * 1024 * 1024:
             return jsonify(error="file too large (max 10MB)"), 413
 
-        if not CLOUDINARY_CLOUD_NAME or not CLOUDINARY_UPLOAD_PRESET:
+        if not CLOUDINARY_CLOUD_NAME or not CLOUDINARY_API_KEY or not CLOUDINARY_API_SECRET:
             return jsonify(error="Cloudinary not configured"), 500
 
         try:
@@ -1429,7 +1433,9 @@ def create_app():
 
             cloudinary.config(
                 cloud_name=CLOUDINARY_CLOUD_NAME,
-                upload_preset=CLOUDINARY_UPLOAD_PRESET
+                api_key=CLOUDINARY_API_KEY,
+                api_secret=CLOUDINARY_API_SECRET,
+                secure=True,
             )
 
             result = cloudinary.uploader.upload(
