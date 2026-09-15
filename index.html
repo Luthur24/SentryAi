@@ -562,6 +562,82 @@
 
   .pg-hint{text-align:center;font-size:11px;color:var(--slate);font-family:var(--mono);margin-top:8px;}
 
+
+  /* New preview styles */
+  .pg-preview-thumb {
+    width: 64px;
+    height: 64px;
+    object-fit: cover;
+    border-radius: 4px;
+    margin-left: 8px;
+  }
+
+  .pg-preview-video {
+    width: 120px;
+    height: 68px;
+    object-fit: cover;
+    border-radius: 4px;
+    margin-left: 8px;
+  }
+
+  .pg-file-preview {
+    display: inline-block;
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
+    color: var(--slate);
+    margin-left: 8px;
+    vertical-align: middle;
+  }
+
+  .pg-uploading {
+    font-size: 11px;
+    color: var(--slate);
+    font-style: italic;
+    margin-left: 8px;
+  }
+
+  .pg-attach-name {
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .pg-remove-btn {
+    background: none;
+    border: none;
+    color: var(--slate);
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    padding: 0 4px;
+    margin-left: 4px;
+  }
+
+  .pg-remove-btn:hover {
+    color: var(--ink);
+  }
+
+  .pg-clear-btn {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--slate);
+    background: none;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 4px 10px;
+    cursor: pointer;
+    margin-left: 8px;
+  }
+
+  .pg-clear-btn:hover {
+    color: var(--ink);
+    border-color: var(--slate);
+  }
+
   @media (max-width:640px){
     .pg-bubble{max-width:85%;}
     .pg-topbar{flex-direction:column;align-items:flex-start;}
@@ -1151,6 +1227,7 @@ response = requests.post(
                 </span>
               </div>
               <div class="pg-topbar-right">
+                <button class="pg-clear-btn" onclick="pgClearChat()" title="Clear conversation">Clear chat</button>
                 <button class="pg-chip" id="pg-search-chip" onclick="pgToggleChip('pg-search-chip')" title="Live web search">
                   <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
                   Web search
@@ -2000,10 +2077,16 @@ response = requests.post(
   }
 
   /* ---------- Playground ---------- */
-  let pgAttachments = []; // {kind, name, file}
+  let pgAttachments = []; // {kind, name, file, url, preview}
   let pgEffort = 'medium';
   let pgMediaRecorder = null;
   let pgRecordedChunks = [];
+  let pgMessages = []; // Conversation history
+  let pgStreaming = false;
+
+  // Cloudinary config - set these for your deployment
+  const CLOUDINARY_CLOUD_NAME = window.CLOUDINARY_CLOUD_NAME || '';
+  const CLOUDINARY_UPLOAD_PRESET = window.CLOUDINARY_UPLOAD_PRESET || '';
 
   function pgToggleChip(id){
     document.getElementById(id).classList.toggle('on');
@@ -2014,24 +2097,137 @@ response = requests.post(
     document.querySelectorAll('#pg-effort-group .pg-seg-btn').forEach(b => b.classList.toggle('active', b.dataset.val === val));
   }
 
+  // Fixed attachment menu with proper event handling
+  let pgAttachMenuOpen = false;
+
   function pgToggleAttachMenu(e){
     e.stopPropagation();
-    document.getElementById('pg-attach-menu').classList.toggle('open');
+    e.preventDefault();
+    const menu = document.getElementById('pg-attach-menu');
+    pgAttachMenuOpen = !pgAttachMenuOpen;
+    menu.classList.toggle('open', pgAttachMenuOpen);
   }
-  document.addEventListener('click', () => document.getElementById('pg-attach-menu')?.classList.remove('open'));
+
+  function pgCloseAttachMenu(){
+    pgAttachMenuOpen = false;
+    document.getElementById('pg-attach-menu')?.classList.remove('open');
+  }
+
+  // Close on outside click
+  document.addEventListener('click', (e) => {
+    if (pgAttachMenuOpen && !e.target.closest('.pg-attach-wrap')) {
+      pgCloseAttachMenu();
+    }
+  });
+
+  // Close on Escape key
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && pgAttachMenuOpen) {
+      pgCloseAttachMenu();
+    }
+  });
 
   function pgPickFile(kind){
-    document.getElementById('pg-attach-menu').classList.remove('open');
+    pgCloseAttachMenu();
     document.getElementById('pg-file-' + kind).click();
   }
 
-  function pgFileChosen(e, kind){
+  // Upload to Cloudinary and get URL
+  async function pgUploadToCloudinary(file, resourceType) {
+    if (!CLOUDINARY_CLOUD_NAME || !CLOUDINARY_UPLOAD_PRESET) {
+      throw new Error('Cloudinary not configured. Set window.CLOUDINARY_CLOUD_NAME and window.CLOUDINARY_UPLOAD_PRESET');
+    }
+
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+
+    const resp = await fetch(
+      `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/${resourceType}/upload`,
+      { method: 'POST', body: formData }
+    );
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.error?.message || 'Upload failed');
+    }
+
+    const data = await resp.json();
+    return data.secure_url;
+  }
+
+  // Get file preview based on type
+  function pgGetFilePreview(file) {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (e) => resolve(e.target.result);
+      reader.onerror = () => resolve(null);
+
+      if (file.type.startsWith('image/')) {
+        reader.readAsDataURL(file);
+      } else if (file.type.startsWith('video/')) {
+        reader.readAsDataURL(file);
+      } else {
+        // For files, read first 500 chars as text preview
+        reader.readAsText(file.slice(0, 2000));
+      }
+    });
+  }
+
+  async function pgFileChosen(e, kind){
     const file = e.target.files[0];
     if(!file) return;
-    pgAttachments.push({kind, name: file.name, file});
+
+    // Size guard: 10MB max
+    if (file.size > 10 * 1024 * 1024) {
+      alert('File too large. Maximum size is 10MB.');
+      e.target.value = '';
+      return;
+    }
+
+    pgCloseAttachMenu();
+
+    // Show loading state
+    const attachment = {kind, name: file.name, file, url: null, preview: null, uploading: true};
+    pgAttachments.push(attachment);
     pgRenderAttachments();
+
+    try {
+      let url = null;
+      let preview = null;
+
+      // Get preview first
+      preview = await pgGetFilePreview(file);
+
+      // Upload to Cloudinary for images and videos
+      if (kind === 'image' || kind === 'video') {
+        try {
+          const resourceType = kind === 'image' ? 'image' : 'video';
+          url = await pgUploadToCloudinary(file, resourceType);
+        } catch (err) {
+          console.error('Cloudinary upload failed:', err);
+          // Fall back to base64 for images if Cloudinary fails
+          if (kind === 'image') {
+            url = preview; // preview is data URL for images
+          } else {
+            throw err;
+          }
+        }
+      }
+
+      // Update attachment with URL and preview
+      attachment.url = url;
+      attachment.preview = preview;
+      attachment.uploading = false;
+      pgRenderAttachments();
+
+    } catch (err) {
+      alert(`Failed to process ${kind}: ${err.message}`);
+      pgAttachments = pgAttachments.filter(a => a !== attachment);
+      pgRenderAttachments();
+    }
+
     e.target.value = '';
-    document.getElementById('pg-attach-menu').classList.remove('open');
   }
 
   function pgRemoveAttachment(idx){
@@ -2052,7 +2248,25 @@ response = requests.post(
     pgAttachments.forEach((a, idx) => {
       const chip = document.createElement('div');
       chip.className = 'pg-attach-chip';
-      chip.innerHTML = `${PG_KIND_ICON[a.kind] || ''} <span>${a.name}</span> <button onclick="pgRemoveAttachment(${idx})">&times;</button>`;
+
+      let previewHtml = '';
+      if (a.uploading) {
+        previewHtml = '<span class="pg-uploading">Uploading...</span>';
+      } else if (a.kind === 'image' && a.preview) {
+        previewHtml = `<img src="${a.preview}" class="pg-preview-thumb" alt="preview">`;
+      } else if (a.kind === 'video' && a.preview) {
+        previewHtml = `<video src="${a.preview}" class="pg-preview-video" muted></video>`;
+      } else if (a.kind === 'document' && a.preview) {
+        const textPreview = a.preview.substring(0, 100).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        previewHtml = `<span class="pg-file-preview">${textPreview}...</span>`;
+      }
+
+      chip.innerHTML = `
+        ${PG_KIND_ICON[a.kind] || ''} 
+        <span class="pg-attach-name">${a.name}</span>
+        ${previewHtml}
+        <button onclick="pgRemoveAttachment(${idx})" class="pg-remove-btn">&times;</button>
+      `;
       wrap.appendChild(chip);
     });
   }
@@ -2072,19 +2286,19 @@ response = requests.post(
       pgMediaRecorder.onstop = () => {
         const blob = new Blob(pgRecordedChunks, {type: 'audio/webm'});
         const file = new File([blob], `voice-note-${Date.now()}.webm`, {type: 'audio/webm'});
-        pgAttachments.push({kind: 'audio', name: file.name, file});
+        pgAttachments.push({kind: 'audio', name: file.name, file, url: null, preview: null, uploading: false});
         pgRenderAttachments();
         stream.getTracks().forEach(t => t.stop());
         btn.classList.remove('recording');
         label.textContent = 'Record voice';
-        document.getElementById('pg-attach-menu').classList.remove('open');
+        pgCloseAttachMenu();
       };
       pgMediaRecorder.start();
       btn.classList.add('recording');
       label.textContent = 'Stop recording...';
     } catch(e) {
       pgAppendMessage('assistant', 'Microphone access was denied or unavailable in this browser.');
-      document.getElementById('pg-attach-menu').classList.remove('open');
+      pgCloseAttachMenu();
     }
   }
 
@@ -2117,6 +2331,22 @@ response = requests.post(
     return bubble;
   }
 
+  function pgAppendStreamingMessage(role){
+    const chat = document.getElementById('pg-chat');
+    const row = document.createElement('div');
+    row.className = 'pg-row pg-row-' + role;
+    const avatar = document.createElement('div');
+    avatar.className = 'pg-avatar pg-avatar-' + role;
+    avatar.textContent = role === 'user' ? 'U' : 'S';
+    const bubble = document.createElement('div');
+    bubble.className = 'pg-bubble pg-bubble-' + role;
+    row.appendChild(avatar);
+    row.appendChild(bubble);
+    chat.appendChild(row);
+    chat.scrollTop = chat.scrollHeight;
+    return bubble;
+  }
+
   function pgAppendTyping(){
     const chat = document.getElementById('pg-chat');
     const row = document.createElement('div');
@@ -2127,21 +2357,60 @@ response = requests.post(
     return row;
   }
 
-  // FIX: attachments were captured into pgAttachments and shown as chips in
-  // the UI, but pgSend() never actually included them in requestBody — they
-  // were silently dropped. Images are now base64-encoded and sent as
-  // OpenAI-style image_url content blocks, which the backend's Gemini adapter
-  // understands. Document/audio/video attachments still show in the UI but
-  // aren't wired to the backend yet — the adapter only translates images
-  // right now — so they're intentionally left out of the request rather than
-  // sent somewhere that silently ignores them.
-  function pgFileToDataURL(file){
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
+  function pgClearChat(){
+    if (confirm('Clear conversation history?')) {
+      pgMessages = [];
+      document.getElementById('pg-chat').innerHTML = `
+        <div class="pg-row pg-row-assistant">
+          <div class="pg-avatar pg-avatar-assistant">S</div>
+          <div class="pg-bubble pg-bubble-assistant">Ask me anything, toggle live web search for current events, or attach an image, document, video, or voice note below.</div>
+        </div>
+      `;
+    }
+  }
+
+  // Parse SSE stream and return full text
+  async function pgParseSSEStream(response, onChunk) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let fullText = '';
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6);
+          if (data === '[DONE]') {
+            return fullText;
+          }
+          try {
+            const chunk = JSON.parse(data);
+            // Handle OpenAI format
+            if (chunk.choices && chunk.choices[0]?.delta?.content) {
+              const content = chunk.choices[0].delta.content;
+              fullText += content;
+              onChunk(content);
+            }
+            // Handle Gemini format
+            else if (chunk.candidates && chunk.candidates[0]?.content?.parts?.[0]?.text) {
+              const content = chunk.candidates[0].content.parts[0].text;
+              fullText += content;
+              onChunk(content);
+            }
+          } catch (e) {
+            // Skip invalid JSON
+          }
+        }
+      }
+    }
+    return fullText;
   }
 
   async function pgSend(){
@@ -2154,8 +2423,54 @@ response = requests.post(
       return;
     }
 
-    const label = text || `[${pgAttachments.map(a => a.kind).join(', ')}]`;
-    pgAppendMessage('user', label);
+    // Build message content
+    let messageContent = text;
+    const imageAttachments = pgAttachments.filter(a => a.kind === 'image' && a.url);
+    const videoAttachments = pgAttachments.filter(a => a.kind === 'video' && a.url);
+    const docAttachments = pgAttachments.filter(a => a.kind === 'document' && a.file);
+
+    if (imageAttachments.length > 0 || videoAttachments.length > 0) {
+      const contentBlocks = [];
+      if (text) contentBlocks.push({type: 'text', text});
+
+      for (const a of imageAttachments) {
+        contentBlocks.push({
+          type: 'image_url',
+          image_url: {url: a.url}
+        });
+      }
+
+      for (const a of videoAttachments) {
+        contentBlocks.push({
+          type: 'video_url',
+          video_url: {url: a.url}
+        });
+      }
+
+      messageContent = contentBlocks;
+    }
+
+    // Handle document attachments - convert to text
+    let docText = '';
+    for (const a of docAttachments) {
+      try {
+        const text = await pgReadFileAsText(a.file);
+        docText += `\n\n--- ${a.name} ---\n${text.substring(0, 5000)}`;
+      } catch (e) {
+        console.error('Failed to read file:', e);
+      }
+    }
+
+    if (docText) {
+      messageContent = (typeof messageContent === 'string' ? messageContent : '') + docText;
+    }
+
+    // Add to history
+    pgMessages.push({role: 'user', content: messageContent});
+
+    // Display user message
+    const displayText = text || `[${pgAttachments.map(a => a.kind).join(', ')}]`;
+    pgAppendMessage('user', displayText);
     input.value = '';
     pgAutoGrow(input);
 
@@ -2167,32 +2482,23 @@ response = requests.post(
 
     const sendBtn = document.getElementById('pg-send-btn');
     sendBtn.disabled = true;
-    const typingRow = pgAppendTyping();
 
-    // Build message content: plain text if there are no image attachments,
-    // otherwise an OpenAI-style content array with text + image_url blocks.
-    const imageAttachments = attachedNow.filter(a => a.kind === 'image');
-    let messageContent = text;
-    if(imageAttachments.length){
-      const imageBlocks = await Promise.all(imageAttachments.map(async a => ({
-        type: 'image_url',
-        image_url: {url: await pgFileToDataURL(a.file)},
-      })));
-      messageContent = [{type: 'text', text: text || ''}, ...imageBlocks];
-    }
+    // Show thinking indicator
+    const thinkingRow = pgAppendTyping();
 
+    // Build request body
     const requestBody = {
       model: 'sentry-1',
-      messages: [{role: 'user', content: messageContent}],
+      messages: pgMessages,
       web_search: {enabled: searchOn},
       reasoning: {enabled: true, effort: pgEffort},
-      response_format: jsonOn ? {type: 'json_object'} : undefined,
       stream: true,
     };
 
-    // In a real deployment this calls window.API_BASE + '/v1/chat/completions'
-    // with the account's key attached server-side. This mockup simulates the
-    // reply locally since there's no backend wired into this static page.
+    if (jsonOn) {
+      requestBody.response_format = {type: 'json_object'};
+    }
+
     if(window.API_BASE){
       try {
         const resp = await fetch(window.API_BASE + '/console/playground/chat', {
@@ -2200,35 +2506,69 @@ response = requests.post(
           headers: {'Content-Type': 'application/json', ...authHeaders()},
           body: JSON.stringify(requestBody),
         });
-        const data = await resp.json();
-        typingRow.remove();
-        if(!resp.ok){
-          // Surface the backend's actual error instead of a generic
-          // "(no content)" — e.g. "invalid API key", "create an API key
-          // first", "daily request cap exceeded", or a provider failure.
+
+        thinkingRow.remove();
+
+        if (!resp.ok) {
+          const data = await resp.json().catch(() => ({}));
           pgAppendMessage('assistant', 'Error (' + resp.status + '): ' + (data.error?.message || 'unknown error'));
+          // Remove failed message from history
+          pgMessages.pop();
+        } else if (resp.headers.get('content-type')?.includes('text/event-stream')) {
+          // Handle streaming response
+          const bubble = pgAppendStreamingMessage('assistant');
+          let fullText = '';
+
+          await pgParseSSEStream(resp, (chunk) => {
+            fullText += chunk;
+            bubble.textContent = fullText;
+            // Auto-scroll
+            const chat = document.getElementById('pg-chat');
+            chat.scrollTop = chat.scrollHeight;
+          });
+
+          // Add to history
+          pgMessages.push({role: 'assistant', content: fullText});
         } else {
-          pgAppendMessage('assistant', data.choices?.[0]?.message?.content || '(no content)');
+          // Non-streaming response
+          const data = await resp.json();
+          const content = data.choices?.[0]?.message?.content || '(no content)';
+          pgAppendMessage('assistant', content);
+          pgMessages.push({role: 'assistant', content});
         }
       } catch(e) {
-        typingRow.remove();
+        thinkingRow.remove();
         pgAppendMessage('assistant', 'Request failed: ' + e.message);
+        pgMessages.pop();
       }
     } else {
+      // Simulated response for demo
       setTimeout(() => {
-        typingRow.remove();
+        thinkingRow.remove();
         const parts = [];
         if(attachedNow.length) parts.push(`(reading ${attachedNow.map(a => a.name).join(', ')}) `);
         parts.push(jsonOn
           ? '{"response": "This is a simulated JSON-mode reply — connect a backend at window.API_BASE to see real output."}'
           : 'This is a simulated Playground reply — connect a backend at window.API_BASE to see real model output' + (searchOn ? ', including live search results' : '') + '.');
-        pgAppendMessage('assistant', parts.join(''));
+        const reply = parts.join('');
+        pgAppendMessage('assistant', reply);
+        pgMessages.push({role: 'assistant', content: reply});
       }, searchOn ? 1000 : 600);
     }
+
     sendBtn.disabled = false;
   }
 
-  let pendingKeyName = '';
+  function pgReadFileAsText(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsText(file);
+    });
+  }
+
+let pendingKeyName = '';
   function openKeyModal(){
     if(consoleState.keys.length){
       alert('Your account already has an API key. Revoke it before creating a new one — only one key is allowed per account.');
