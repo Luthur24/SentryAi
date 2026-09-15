@@ -2084,9 +2084,6 @@ response = requests.post(
   let pgMessages = []; // Conversation history
   let pgStreaming = false;
 
-  // Cloudinary config - set these for your deployment
-  const CLOUDINARY_CLOUD_NAME = window.CLOUDINARY_CLOUD_NAME || '';
-  const CLOUDINARY_UPLOAD_PRESET = window.CLOUDINARY_UPLOAD_PRESET || '';
 
   function pgToggleChip(id){
     document.getElementById(id).classList.toggle('on');
@@ -2132,28 +2129,30 @@ response = requests.post(
     document.getElementById('pg-file-' + kind).click();
   }
 
-  // Upload to Cloudinary and get URL
+  // Upload via our own backend, which does a signed Cloudinary upload.
+  // (Never call Cloudinary directly from the browser with a secret key —
+  // this keeps credentials server-side.)
   async function pgUploadToCloudinary(file, resourceType) {
-    if (!CLOUDINARY_CLOUD_NAME || !CLOUDINARY_UPLOAD_PRESET) {
-      throw new Error('Cloudinary not configured. Set window.CLOUDINARY_CLOUD_NAME and window.CLOUDINARY_UPLOAD_PRESET');
+    if (!window.API_BASE) {
+      throw new Error('No backend configured (window.API_BASE not set)');
     }
 
     const formData = new FormData();
     formData.append('file', file);
-    formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
 
-    const resp = await fetch(
-      `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/${resourceType}/upload`,
-      { method: 'POST', body: formData }
-    );
+    const resp = await fetch(window.API_BASE + '/console/upload', {
+      method: 'POST',
+      headers: { ...authHeaders() },
+      body: formData,
+    });
 
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
-      throw new Error(err.error?.message || 'Upload failed');
+      throw new Error(err.error || 'Upload failed');
     }
 
     const data = await resp.json();
-    return data.secure_url;
+    return data.url;
   }
 
   // Get file preview based on type
