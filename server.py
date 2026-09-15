@@ -433,8 +433,8 @@ OPENAI_STYLE = {
 
 GEMINI_API_KEY_ENVS = ["GEMINI_API_KEY_1", "GEMINI_API_KEY_2"]
 GEMINI_API_KEY_DEFAULTS = [
-    "AQ.Ab8RN6Kq43fqm482ux_6BD71H67SjJlBjE4qbqY94AGUW1JyLw",
-    "AIzaSyBRB2XWuUT-E_X0D8F7B1YTdjrkMIRMBRY",
+    "",
+    "",
 ]
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite")
 
@@ -451,9 +451,87 @@ def has_media(messages: list) -> bool:
         content = m.get("content")
         if isinstance(content, list):
             for block in content:
-                if isinstance(block, dict) and block.get("type") in ("image_url", "input_audio", "video_url"):
+                if isinstance(block, dict) and block.get("type") in ("image_url", "input_audio", "audio_url", "video_url"):
                     return True
     return False
+
+
+def _transcribe_audio_bytes(audio_bytes: bytes, filename: str = "audio.webm") -> str:
+    """Transcribe raw audio bytes via Groq's Whisper API. None of our chat
+    models take audio directly, so every voice message gets turned into text
+    before it ever reaches call_model()."""
+    keys = [os.environ.get(e, d) for e, d in zip(OPENAI_STYLE["groq"]["api_key_envs"], OPENAI_STYLE["groq"]["api_key_defaults"])]
+    keys = [k for k in keys if k]
+    if not keys:
+        raise ProviderError("audio transcription: no Groq API key configured")
+
+    last_error = None
+    for key in keys:
+        try:
+            resp = requests.post(
+                "https://api.groq.com/openai/v1/audio/transcriptions",
+                headers={"Authorization": f"Bearer {key}"},
+                files={"file": (filename, audio_bytes)},
+                data={"model": "whisper-large-v3-turbo"},
+                timeout=60,
+            )
+            if resp.status_code >= 400:
+                last_error = f"groq whisper: {resp.status_code} — {_error_detail(resp)}"
+                logger.error(f"audio transcription failed: {last_error}")
+                continue
+            text = resp.json().get("text", "").strip()
+            logger.info(f"audio transcription succeeded, {len(text)} chars")
+            return text
+        except requests.RequestException as e:
+            last_error = f"groq whisper: {e}"
+            logger.error(f"audio transcription request failed: {e}")
+            continue
+    raise ProviderError(last_error or "audio transcription failed on all keys")
+
+
+def _transcribe_audio_blocks(messages: list) -> list:
+    """Replace audio_url / input_audio content blocks with their transcribed
+    text so the chat model gets something it can actually read. Runs before
+    routing/token counting, so a voice message behaves just like typed text
+    from that point on."""
+    out = []
+    for m in messages:
+        content = m.get("content")
+        if not isinstance(content, list):
+            out.append(m)
+            continue
+
+        new_content = []
+        changed = False
+        for block in content:
+            btype = block.get("type") if isinstance(block, dict) else None
+            if btype not in ("audio_url", "input_audio"):
+                new_content.append(block)
+                continue
+
+            changed = True
+            try:
+                if btype == "audio_url":
+                    url = (block.get("audio_url") or {}).get("url")
+                    audio_resp = requests.get(url, timeout=30)
+                    audio_resp.raise_for_status()
+                    audio_bytes = audio_resp.content
+                else:  # input_audio -- base64-encoded data
+                    import base64
+                    b64_data = (block.get("input_audio") or {}).get("data", "")
+                    audio_bytes = base64.b64decode(b64_data)
+
+                transcript = _transcribe_audio_bytes(audio_bytes)
+                new_content.append({
+                    "type": "text",
+                    "text": f"[Voice message transcript]: {transcript}" if transcript else "[Voice message was empty or inaudible]"
+                })
+            except (requests.RequestException, ProviderError, ValueError) as e:
+                logger.error(f"failed to transcribe audio block: {e}")
+                new_content.append({"type": "text", "text": f"[Voice message could not be transcribed: {e}]"})
+
+        out.append({**m, "content": new_content if changed else content})
+    return out
 
 
 def estimate_tokens(messages) -> int:
@@ -508,8 +586,12 @@ def _call_openai_style(provider: str, messages: list, client_body: dict, tools, 
     body = {"model": cfg["model"], "messages": messages}
     _forward_sampling_params(body, client_body or {})
 
-    # Add reasoning params if supported
-    if cfg.get("supports_reasoning"):
+    # Add reasoning params if supported -- but skip when tools are active.
+    # Reasoning-effort mode and function-calling are known to fight each
+    # other on some models (the model reasons its way to a direct answer
+    # instead of ever emitting a tool call), which was silently breaking
+    # web search here.
+    if cfg.get("supports_reasoning") and not tools:
         body.update(_get_reasoning_params(provider, client_body or {}))
 
     if tools:
@@ -1493,6 +1575,12 @@ def create_app():
         messages = body.get("messages") or []
         if not messages:
             return {"error": {"message": "messages required"}}, 400, None
+
+        try:
+            messages = _transcribe_audio_blocks(messages)
+        except Exception as e:
+            logger.error(f"audio preprocessing failed: {e}")
+            return {"error": {"message": f"Failed to process audio: {e}"}}, 502, None
 
         tokens_in = estimate_tokens(messages)
         if tokens_in > MAX_INPUT_TOKENS:
