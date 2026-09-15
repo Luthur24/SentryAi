@@ -327,32 +327,29 @@ def _hash_key(key: str) -> str:
 
 
 def mark_key_down(provider: str, key: str, error, cooldown_seconds: int = 30):
-    """Mark a specific key as cooling down, not the whole provider."""
-    key_hash = _hash_key(key)
-    until = utcnow() + dt.timedelta(seconds=cooldown_seconds)
-    with get_cursor(commit=True) as cur:
-        cur.execute(
-            """INSERT INTO key_status (provider, key_hash, unavailable_until, last_error)
-               VALUES (%s, %s, %s, %s)
-               ON CONFLICT (provider, key_hash) DO UPDATE
-               SET unavailable_until = EXCLUDED.unavailable_until,
-                   last_error = EXCLUDED.last_error""",
-            (provider, key_hash, until, str(error)[:500]),
-        )
+    """Cooldowns are disabled — this is now a no-op. Every request tries every
+    configured key fresh, so one bad response never blocks other users from
+    a key that might work for them."""
+    pass
 
 
-def is_key_available(provider: str, key: str) -> bool:
-    """Check if a specific key is available."""
+def get_key_cooldown_info(provider: str, key: str):
+    """Return (unavailable_until, last_error) for a key, or (None, None)."""
     key_hash = _hash_key(key)
     with get_cursor() as cur:
         cur.execute(
-            "SELECT unavailable_until FROM key_status WHERE provider = %s AND key_hash = %s",
+            "SELECT unavailable_until, last_error FROM key_status WHERE provider = %s AND key_hash = %s",
             (provider, key_hash)
         )
         row = cur.fetchone()
-    if not row or not row["unavailable_until"]:
-        return True
-    return utcnow() > row["unavailable_until"]
+    if not row:
+        return None, None
+    return row["unavailable_until"], row["last_error"]
+
+
+def is_key_available(provider: str, key: str) -> bool:
+    """Cooldowns are disabled — always available."""
+    return True
 
 
 # Keep old functions for backward compatibility but make them no-ops
@@ -527,6 +524,8 @@ def _call_openai_style(provider: str, messages: list, client_body: dict, tools, 
     for key in keys:
         # Check per-key cooldown
         if not is_key_available(provider, key):
+            until, prev_err = get_key_cooldown_info(provider, key)
+            last_error = f"{provider}: key {_hash_key(key)} still cooling down until {until} — last error: {prev_err}"
             logger.info(f"{provider}: key {_hash_key(key)} cooling down, skipping")
             continue
 
@@ -839,6 +838,8 @@ def _call_gemini(messages: list, timeout: int, stream: bool = False):
     for key in keys:
         # Check per-key cooldown
         if not is_key_available("gemini", key):
+            until, prev_err = get_key_cooldown_info("gemini", key)
+            last_error = f"gemini: key {_hash_key(key)} still cooling down until {until} — last error: {prev_err}"
             logger.info(f"gemini: key {_hash_key(key)} cooling down, skipping")
             continue
 
