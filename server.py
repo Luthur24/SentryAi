@@ -1576,11 +1576,36 @@ def create_app():
         if not messages:
             return {"error": {"message": "messages required"}}, 400, None
 
-        # Inject identity + search behavior system message (only once, here)
+        # Inject system message with tool awareness
         web_search_enabled = bool((body.get("web_search") or {}).get("enabled"))
-        system_content = "You are Sentry 1, an AI assistant accessed via the Fluid Intelligence API."
+
         if web_search_enabled:
-            system_content += " You have web search enabled. For ANY question about current events, recent data, prices, news, weather, or anything that might have changed after your training cutoff, you MUST call web_search first. Do not answer from memory when search is available. Do not claim you cannot access the internet."
+            system_content = """You are Sentry 1, an AI assistant accessed via the Fluid Intelligence API.
+
+AVAILABLE TOOLS:
+- web_search: Search the live web for current information.
+
+TOOL USAGE RULES:
+- To use web_search, output: [SEARCH: your query here]
+- Only use [SEARCH: ...] for current events, news, prices, weather, or recent data
+- Do NOT use [SEARCH: ...] for general knowledge, math, coding, or historical facts
+- After search results are provided, answer using those results
+
+Search is currently ENABLED."""
+        else:
+            system_content = """You are Sentry 1, an AI assistant accessed via the Fluid Intelligence API.
+
+AVAILABLE TOOLS:
+- web_search: Search the live web for current information (currently DISABLED)
+
+TOOL USAGE RULES:
+- web_search is currently turned OFF by the user
+- If asked about current events, news, prices, weather, or recent data, inform the user that web search is disabled and suggest they enable it
+- Do not pretend to search or claim you cannot access the internet - simply explain that search is available but turned off
+- For general knowledge, math, coding, or historical facts, answer directly without mentioning search
+
+Search is currently DISABLED. User can enable it by toggling web_search to true."""
+
         messages.insert(0, {"role": "system", "content": system_content})
 
         try:
@@ -1601,6 +1626,7 @@ def create_app():
             resp.headers["Retry-After"] = str(seconds_until_midnight_utc())
             return None, 429, count
 
+        web_search_enabled = bool((body.get("web_search") or {}).get("enabled"))
         stream = bool(body.get("stream"))
 
         try:
