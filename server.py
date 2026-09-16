@@ -14,8 +14,8 @@ What changed in this edit (everything the user asked for):
    and identical across every Gemini model we route to.
 5) Reasoning effort now maps to different Gemini models (max input stays 1M):
       low    -> gemini-3.1-flash-lite
-      medium -> gemini-3.1-flash
-      high   -> gemini-3.1-pro
+      medium -> gemini-3-flash-preview
+      high   -> gemini-3.1-pro-preview
    (model IDs are env-overridable via GEMINI_MODEL_LOW/MEDIUM/HIGH.)
 6) Tavily: the model controls it via tags, like web search already did:
       [SEARCH: query | n=10 | depth=advanced | images=yes]
@@ -398,11 +398,17 @@ PROVIDERS = {
 DEFAULT_ORDER = ["groq", "mistral", "zai", "gemini"]
 
 # --- Gemini: model per reasoning effort (max input identical for all: 1M) ---
-GEMINI_MODEL_DEFAULT = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash")
+# NOTE (fixed 2026-09-16): "gemini-3.1-flash" and "gemini-3.1-pro" are not
+# real model IDs — that was the cause of the 404 "is not found for API
+# version v1beta" error. The actual current IDs are gemini-3.1-flash-lite
+# (stable), gemini-3-flash-preview (mid-tier, has a free tier), and
+# gemini-3.1-pro-preview (top tier — check your quota, Pro-class models may
+# need billing enabled even on an otherwise-free project).
+GEMINI_MODEL_DEFAULT = os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview")
 GEMINI_MODEL_BY_EFFORT = {
     "low": os.environ.get("GEMINI_MODEL_LOW", "gemini-3.1-flash-lite"),
-    "medium": os.environ.get("GEMINI_MODEL_MEDIUM", "gemini-3.1-flash"),
-    "high": os.environ.get("GEMINI_MODEL_HIGH", "gemini-3.1-pro"),
+    "medium": os.environ.get("GEMINI_MODEL_MEDIUM", "gemini-3-flash-preview"),
+    "high": os.environ.get("GEMINI_MODEL_HIGH", "gemini-3.1-pro-preview"),
 }
 
 
@@ -1496,8 +1502,8 @@ def create_app():
         return jsonify(data=[
             {"id": "sentry-1", "object": "model"},
             {"id": "gemini-3.1-flash-lite", "object": "model"},
-            {"id": "gemini-3.1-flash", "object": "model"},
-            {"id": "gemini-3.1-pro", "object": "model"},
+            {"id": "gemini-3-flash-preview", "object": "model"},
+            {"id": "gemini-3.1-pro-preview", "object": "model"},
         ])
 
     # ---------- auth ----------
