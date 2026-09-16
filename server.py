@@ -1232,16 +1232,37 @@ def _inject_tavily_results(messages: list, query: str, max_results: int = 5) -> 
         return messages
 
 
-def run_agentic_completion(messages: list, client_body: dict = None, web_search_enabled: bool = True, stream: bool = False):
-    """Model -> tool calls -> results -> model, until no more tool calls or
-    MAX_TOOL_ITERATIONS is hit.
+SEARCH_TAG_RE = re.compile(r"\[SEARCH:\s*(.+?)\]", re.IGNORECASE | re.DOTALL)
 
-    If no provider can serve the tool-enabled request, falls back to:
-      1. Tavily pre-search — search the user's question first, inject results
-         as context, then call the model without tools.
-      2. Plain no-tools completion if Tavily is also unavailable.
+
+def _extract_search_tags(text: str):
+    """Pull every [SEARCH: query] tag out of the model's plain-text output.
+
+    This is the text convention documented in the system prompt (see
+    completion_core). We never send the model a native function-calling
+    schema for web_search -- it's purely a text instruction -- so this is
+    the only place a search request actually gets detected and acted on.
     """
-    tools = [WEB_SEARCH_TOOL_SCHEMA] if web_search_enabled else None
+    if not text:
+        return []
+    return [q.strip() for q in SEARCH_TAG_RE.findall(text) if q.strip()]
+
+
+def run_agentic_completion(messages: list, client_body: dict = None, web_search_enabled: bool = True, stream: bool = False):
+    """Model -> [SEARCH: query] tags -> results -> model, until the model
+    stops asking for search or MAX_TOOL_ITERATIONS is hit.
+
+    Search requests are detected by scanning the model's text output for
+    the [SEARCH: ...] tag the system prompt tells it to use -- there's no
+    provider-native tool_calls involved. When one or more tags show up, we
+    run each query against Tavily ourselves, feed the results back in as
+    plain context, and call the model again for a fresh answer.
+
+    If a model call fails outright (independent of search), falls back to:
+      1. Tavily pre-search — search the user's question first, inject
+         results as context, then call the model again.
+      2. Re-raising if Tavily is also unavailable / already tried.
+    """
     working = list(messages)
     degraded = False
 
@@ -1250,13 +1271,13 @@ def run_agentic_completion(messages: list, client_body: dict = None, web_search_
         should_stream = stream and is_final and not degraded
 
         try:
-            result = call_model(working, client_body=client_body, tools=tools, stream=should_stream)
+            result = call_model(working, client_body=client_body, tools=None, stream=should_stream)
         except ProviderError as e:
-            if not tools:
+            if not web_search_enabled or degraded:
                 raise
-            # No provider could serve the tool-enabled request.
-            # Fall back to Tavily pre-search instead of returning a 502.
-            logger.warning(f"Tool-enabled call failed ({e}); falling back to Tavily pre-search")
+            # Every provider failed outright. Fall back to Tavily
+            # pre-search instead of returning a 502.
+            logger.warning(f"Model call failed ({e}); falling back to Tavily pre-search")
             degraded = True
 
             # Extract the user's last message as the search query
@@ -1280,27 +1301,33 @@ def run_agentic_completion(messages: list, client_body: dict = None, web_search_
                 "streaming": True,
             }
 
-        if not result.get("tool_calls"):
-            out = {"content": result["content"], "provider": result["provider"], "streaming": False}
+        content = result.get("content") or ""
+        queries = _extract_search_tags(content) if web_search_enabled else []
+
+        if not queries:
+            out = {"content": content, "provider": result["provider"], "streaming": False}
             if degraded:
                 out["web_search_degraded"] = True
             return out
 
-        working.append({"role": "assistant", "content": result.get("content") or ""})
-        for call in result["tool_calls"]:
-            fn_name = call["function"]["name"]
+        # Keep the model's own [SEARCH: ...] message in the transcript for
+        # context, then inject real results and loop back for a real answer.
+        working.append({"role": "assistant", "content": content})
+        for query in queries:
             try:
-                fn_args = json.loads(call["function"]["arguments"] or "{}")
-            except json.JSONDecodeError:
-                fn_args = {}
-            impl = TOOL_IMPLEMENTATIONS.get(fn_name)
-            try:
-                tool_output = impl(**fn_args) if impl else {"error": f"unknown tool {fn_name}"}
+                tool_output = web_search(query)
             except Exception as e:
                 tool_output = {"error": str(e)}
-            working.append({"role": "tool", "name": fn_name, "content": json.dumps(tool_output)})
+            working.append({
+                "role": "system",
+                "content": (
+                    f'Search results for "{query}":\n{json.dumps(tool_output)}\n\n'
+                    "Answer the user using these results. Only output another "
+                    "[SEARCH: ...] tag if you genuinely need a different query."
+                ),
+            })
 
-    out = {"content": "I wasn't able to finish that within the tool-call limit.", "provider": None, "streaming": False}
+    out = {"content": "I wasn't able to finish that within the search-iteration limit.", "provider": None, "streaming": False}
     if degraded:
         out["web_search_degraded"] = True
     return out
