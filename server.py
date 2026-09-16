@@ -1000,6 +1000,15 @@ def _call_gemini(messages: list, timeout: int, stream: bool = False, model: str 
             logger.error(f"gemini: error on key {_hash_key(key)}: {e}")
             continue
 
+    # Free-tier guard: gemini-3.1-pro-preview (the "high" effort model) is
+    # not available on the free tier — fall back to the medium model instead
+    # of 502ing the whole request. The frontend surfaces the downgrade.
+    if "pro" in model and model != GEMINI_MODEL_BY_EFFORT["medium"]:
+        if any(s in (last_error or "").lower() for s in ("not found", "404", "quota", "permission", "billing", "denied")):
+            fallback_model = GEMINI_MODEL_BY_EFFORT["medium"]
+            logger.warning(f"gemini: {model} unavailable on this tier ({last_error}); falling back to {fallback_model}")
+            return _call_gemini(messages, timeout, stream=stream, model=fallback_model)
+
     raise ProviderError(last_error or "gemini: all keys failed")
 
 
@@ -1493,6 +1502,28 @@ def build_system_prompt(body: dict, is_json_retry: bool = False) -> str:
         "ago/until something is." % utcnow().strftime("%A, %B %d, %Y, %H:%M UTC")
     )
 
+    # ---- executable JavaScript (playground sandbox) ----
+    lines.append("")
+    lines.append("EXECUTABLE JAVASCRIPT — the playground can run JavaScript you write:")
+    lines.append('- Write JavaScript inside a ```js fenced code block and the playground renders a "run" button next to it.')
+    lines.append("- The code executes in a sandboxed iframe and console.log() output is shown to the user under the code block.")
+    lines.append("- Use this for calculations, algorithms, data transformations, simulations, or small demos — anything where running code is clearer than describing it.")
+    lines.append("- Code must be self-contained. You may load external libraries only via a CDN <script> tag you write yourself inside the code.")
+    lines.append("- Do NOT use executable code blocks for trivial one-liners or for code the user only wants to read/copy.")
+
+    # ---- image embedding rules ----
+    lines.append("")
+    lines.append("IMAGE EMBEDDING — when you embed images using markdown ![description](url):")
+    lines.append("- The playground automatically scales every image to fit the chat width (nothing can overflow the screen), so never worry about pixel dimensions and never reference image size.")
+    lines.append("- Only embed an image when it genuinely helps the answer, and always write a meaningful description in the alt text.")
+    lines.append("- If a search returned images, prefer the most relevant one rather than embedding many.")
+
+    # ---- reasoning effort identity ----
+    reasoning_cfg = body.get("reasoning") or {}
+    if reasoning_cfg.get("enabled"):
+        lines.append("")
+        lines.append(f"Your reasoning effort for this request is set to {(reasoning_cfg.get('effort') or 'medium').upper()} — this controls how long you should deliberate before answering.")
+
     # ---- live web search (Tavily), model-controlled via tags ----
     if web_enabled:
         lines.append("")
@@ -1867,6 +1898,8 @@ def create_app():
                 "trace": result.get("trace", tr.events),
             }, 200, count
 
+        chosen_model = _gemini_model_for_request(body)
+
         # Validate JSON if response_format requested
         response_format = body.get("response_format")
         content = result["content"]
@@ -1893,6 +1926,7 @@ def create_app():
             ],
             "_provider_used": result["provider"],
             "_gemini_model": result.get("model"),
+            **({"_reasoning_downgraded": True} if (result.get("model") and result["model"] != chosen_model) else {}),
             "usage": {"prompt_tokens_est": tokens_in, "completion_tokens_est": tokens_out},
             "_debug_trace": result.get("trace", tr.events),
         }
