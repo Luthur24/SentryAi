@@ -1,22 +1,27 @@
 """
-Fluid Intelligence backend — Gemini-only edition.
+Fluid Intelligence backend — Gemini + Mistral edition.
 
 What changed in this edit (everything the user asked for):
-1) Gemini is now the ONLY active provider. Groq/Mistral/Zai code stays in the
-   file but is disconnected via GEMINI_ONLY=1 (default). Flip the env var to
-   re-enable the old router.
+1) Gemini is Plan A, Mistral is Plan B (fixed 2026-09-16). GEMINI_ONLY now
+   defaults to "0": every request tries Gemini first, and if every Gemini key
+   fails (rate limit, quota, outage) it falls through to Mistral automatically
+   inside call_model(). Groq/Zai code stays in the file, still disconnected.
+   Set GEMINI_ONLY=1 to go back to Gemini-exclusive (no Mistral fallback).
 2) Gemini key slots: GEMINI_API_KEY_1 / GEMINI_API_KEY_2 env vars, or a single
-   GEMINI_API_KEY env var with comma-separated keys.
+   GEMINI_API_KEY env var with comma-separated keys. Mistral: MISTRAL_API_KEY_1
+   / MISTRAL_API_KEY_2, same pattern.
 3) JSON mode is now driven the same way as web search: the system prompt tells
    the model JSON mode is on and exactly what schema to produce; the backend
    validates and retries once on failure (validate_and_fix_json kept).
 4) MAX_INPUT_TOKENS raised to the Gemini context maximum (1M), env-overridable,
    and identical across every Gemini model we route to.
-5) Reasoning effort now maps to different Gemini models (max input stays 1M):
-      low    -> gemini-3.1-flash-lite
-      medium -> gemini-3-flash-preview
-      high   -> gemini-3.1-pro-preview
-   (model IDs are env-overridable via GEMINI_MODEL_LOW/MEDIUM/HIGH.)
+5) Reasoning effort maps to different models per provider (fixed 2026-09-16 —
+   dropped gemini-3.1-pro-preview, it had 0 free-tier RPM on this project):
+      low    -> gemini-3.5-flash-lite   | mistral: ministral-8b-latest
+      medium -> gemini-3.7-flash        | mistral: mistral-small-latest
+      high   -> gemini-3.8-flash        | mistral: mistral-large-latest
+   (all nine IDs are env-overridable — see GEMINI_MODEL_LOW/MEDIUM/HIGH and
+   MISTRAL_MODEL_LOW/MEDIUM/HIGH.)
 6) Tavily: the model controls it via tags, like web search already did:
       [SEARCH: query | n=10 | depth=advanced | images=yes]
       [FETCH: https://example.com/article]   <- full-page crawl of any URL
@@ -82,9 +87,12 @@ MAX_FETCH_CHARS = 8000         # chars of a crawled page injected per [FETCH:]
 FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "*")
 
 # --- Provider selection -------------------------------------------------
-# Gemini-only is the default now. Set GEMINI_ONLY=0 to re-enable the old
-# multi-provider router (groq/mistral/zai code paths are still in the file).
-GEMINI_ONLY = os.environ.get("GEMINI_ONLY", "1") == "1"
+# Two-provider setup (fixed 2026-09-16): Gemini is Plan A, Mistral is Plan B.
+# If every Gemini key fails (rate limit, quota, outage), the request falls
+# through to Mistral automatically inside call_model(). Groq/Zai code stays
+# in the file, still disconnected. Set GEMINI_ONLY=1 env var to go back to
+# Gemini-exclusive mode (no Mistral fallback) if you ever want that.
+GEMINI_ONLY = os.environ.get("GEMINI_ONLY", "0") == "1"
 
 # Cloudinary config (for image/video uploads)
 CLOUDINARY_CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME", "ddusfl7pi")
@@ -399,20 +407,25 @@ PROVIDERS = {
     },
 }
 
-DEFAULT_ORDER = ["groq", "mistral", "zai", "gemini"]
+# Active provider order: Gemini tried first (Plan A), Mistral second (Plan B).
+# Groq/Zai are left out on purpose — still configured below, still
+# disconnected. Override with PROVIDER_ORDER="gemini,mistral,..." if needed.
+DEFAULT_ORDER = [p.strip() for p in os.environ.get("PROVIDER_ORDER", "gemini,mistral").split(",") if p.strip()]
 
 # --- Gemini: model per reasoning effort (max input identical for all: 1M) ---
-# NOTE (fixed 2026-09-16): "gemini-3.1-flash" and "gemini-3.1-pro" are not
-# real model IDs — that was the cause of the 404 "is not found for API
-# version v1beta" error. The actual current IDs are gemini-3.1-flash-lite
-# (stable), gemini-3-flash-preview (mid-tier, has a free tier), and
-# gemini-3.1-pro-preview (top tier — check your quota, Pro-class models may
-# need billing enabled even on an otherwise-free project).
-GEMINI_MODEL_DEFAULT = os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview")
+# NOTE (fixed 2026-09-16): swapped off gemini-3.1-pro-preview — it was
+# returning 0 RPM free-tier quota on this project (see AI Studio > Rate
+# Limit), so "high" effort 429'd on the very first call, every time. Replaced
+# with the actual models that showed live free-tier RPM on this account:
+#   low    -> gemini-3.5-flash-lite   (15 RPM here — cheapest/fastest)
+#   medium -> gemini-3.7-flash        (5 RPM — better reasoning than 3.5)
+#   high   -> gemini-3.8-flash        (5 RPM — newest, most tool/reasoning steps)
+# No Pro-tier model in the mix anymore. Still env-overridable per tier.
+GEMINI_MODEL_DEFAULT = os.environ.get("GEMINI_MODEL", "gemini-3.7-flash")
 GEMINI_MODEL_BY_EFFORT = {
-    "low": os.environ.get("GEMINI_MODEL_LOW", "gemini-3.1-flash-lite"),
-    "medium": os.environ.get("GEMINI_MODEL_MEDIUM", "gemini-3-flash-preview"),
-    "high": os.environ.get("GEMINI_MODEL_HIGH", "gemini-3.1-pro-preview"),
+    "low": os.environ.get("GEMINI_MODEL_LOW", "gemini-3.5-flash-lite"),
+    "medium": os.environ.get("GEMINI_MODEL_MEDIUM", "gemini-3.7-flash"),
+    "high": os.environ.get("GEMINI_MODEL_HIGH", "gemini-3.8-flash"),
 }
 
 
@@ -472,6 +485,31 @@ OPENAI_STYLE = {
         "supports_reasoning": False,
     },
 }
+
+# --- Mistral: model per reasoning effort (fixed 2026-09-16) -----------------
+# Mistral has "supports_reasoning": False above — no reasoning_effort request
+# param like Groq gets. So low/medium/high has to be three different models
+# instead of one model with a dial. Picked for a size/capability ladder:
+#   low    -> ministral-8b-latest   (small, cheap, fast)
+#   medium -> mistral-small-latest  (mid-tier)
+#   high   -> mistral-large-latest  (flagship — same as the old fixed default)
+# Falls back to OPENAI_STYLE["mistral"]["model"] if reasoning isn't enabled
+# on the request at all, or an unrecognized effort string comes through.
+MISTRAL_MODEL_BY_EFFORT = {
+    "low": os.environ.get("MISTRAL_MODEL_LOW", "ministral-8b-latest"),
+    "medium": os.environ.get("MISTRAL_MODEL_MEDIUM", "mistral-small-latest"),
+    "high": os.environ.get("MISTRAL_MODEL_HIGH", "mistral-large-latest"),
+}
+
+
+def _mistral_model_for_request(client_body: dict) -> str:
+    """Pick the Mistral model from the requested reasoning effort, mirroring
+    _gemini_model_for_request() above."""
+    reasoning = (client_body or {}).get("reasoning") or {}
+    if reasoning.get("enabled"):
+        effort = (reasoning.get("effort") or "medium").lower()
+        return MISTRAL_MODEL_BY_EFFORT.get(effort, OPENAI_STYLE["mistral"]["model"])
+    return OPENAI_STYLE["mistral"]["model"]
 
 PASSTHROUGH_PARAMS = ("temperature", "top_p", "top_k", "max_tokens", "stop", "seed",
                       "presence_penalty", "frequency_penalty", "response_format")
@@ -639,7 +677,11 @@ def _call_openai_style(provider: str, messages: list, client_body: dict, tools, 
     if not keys:
         raise ProviderError(f"{provider}: no API keys configured")
 
-    body = {"model": cfg["model"], "messages": messages}
+    model_id = cfg["model"]
+    if provider == "mistral":
+        model_id = _mistral_model_for_request(client_body or {})
+
+    body = {"model": model_id, "messages": messages}
     _forward_sampling_params(body, client_body or {})
 
     if cfg.get("supports_reasoning") and not tools:
@@ -1071,9 +1113,11 @@ def _rank_providers(messages: list, tools, stream: bool, client_body: dict) -> l
 
 
 def call_model(messages: list, client_body: dict = None, tools=None, timeout: int = 30, order=None, stream: bool = False):
-    """Route to a provider. With GEMINI_ONLY=1 (default) everything goes to
-    Gemini with the effort-based model pick; other providers stay in the file
-    but are disconnected."""
+    """Route to a provider. Default (GEMINI_ONLY=0): try Gemini first with the
+    effort-based model pick; if every Gemini key fails, fall through to
+    Mistral (also effort-based model pick). Set GEMINI_ONLY=1 to disable the
+    Mistral fallback and go Gemini-exclusive. Groq/Zai stay in the file,
+    disconnected either way."""
     errors = []
 
     if GEMINI_ONLY:
@@ -1081,11 +1125,11 @@ def call_model(messages: list, client_body: dict = None, tools=None, timeout: in
     elif order is not None:
         names = order
     else:
-        env_order = os.environ.get("PROVIDER_ORDER")
-        if env_order:
-            names = [p.strip() for p in env_order.split(",")]
-        else:
-            names = None
+        # Deterministic: always gemini first, mistral second (DEFAULT_ORDER
+        # above). No more falling through to _rank_providers(), which used
+        # to put groq ahead of gemini by default — that's what silently
+        # broke "Gemini is Plan A" before this fix.
+        names = DEFAULT_ORDER
 
     if names:
         needs_media = has_media(messages)
@@ -1656,11 +1700,12 @@ def create_app():
 
     @app.get("/v1/models")
     def list_models():
+        # Kept in sync with GEMINI_MODEL_BY_EFFORT / MISTRAL_MODEL_BY_EFFORT
+        # (fixed 2026-09-16) rather than hardcoded a second time.
         return jsonify(data=[
             {"id": "sentry-1", "object": "model"},
-            {"id": "gemini-3.1-flash-lite", "object": "model"},
-            {"id": "gemini-3-flash-preview", "object": "model"},
-            {"id": "gemini-3.1-pro-preview", "object": "model"},
+            *[{"id": m, "object": "model"} for m in GEMINI_MODEL_BY_EFFORT.values()],
+            *[{"id": m, "object": "model"} for m in MISTRAL_MODEL_BY_EFFORT.values()],
         ])
 
     # ---------- auth ----------
