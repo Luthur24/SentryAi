@@ -24,6 +24,9 @@ What changed in this edit (everything the user asked for):
    the model is explicitly allowed to reference them as markdown images
    (![desc](url)) which the playground renders inline. Non-streaming responses
    also carry a _search_images field.
+7) Playground controls wired through: client temperature / top_p / top_k /
+   max_tokens are forwarded into Gemini's generationConfig (previously only
+   the disconnected openai-style providers received them).
 """
 
 import os
@@ -908,7 +911,7 @@ def _extract_docx_text(content: bytes) -> str:
         return "[DOCX support not available. Install python-docx or convert to PDF/TXT]"
 
 
-def _call_gemini(messages: list, timeout: int, stream: bool = False, model: str = None):
+def _call_gemini(messages: list, timeout: int, stream: bool = False, model: str = None, client_body: dict = None):
     """The one active provider. Model is chosen per reasoning effort."""
     model = model or GEMINI_MODEL_DEFAULT
     keys = GEMINI_KEYS
@@ -916,8 +919,23 @@ def _call_gemini(messages: list, timeout: int, stream: bool = False, model: str 
         raise ProviderError("gemini: no API keys configured (set GEMINI_API_KEY or GEMINI_API_KEY_1/2)")
 
     body = {"contents": _messages_to_gemini_contents(messages)}
+    # Sampling controls (temperature / top_p / top_k / max_tokens) forwarded
+    # from the client request — same passthrough spirit as PASSTHROUGH_PARAMS
+    # for the openai-style providers. Without this the playground sliders
+    # were silently ignored in the gemini-only path.
+    gen_cfg = {}
     if stream:
-        body["generationConfig"] = {"maxOutputTokens": 8192}
+        gen_cfg["maxOutputTokens"] = 8192
+    if client_body:
+        for src, dst in (("temperature", "temperature"), ("top_p", "topP"), ("top_k", "topK")):
+            v = client_body.get(src)
+            if v is not None:
+                gen_cfg[dst] = v
+        mt = client_body.get("max_tokens")
+        if mt:
+            gen_cfg["maxOutputTokens"] = mt
+    if gen_cfg:
+        body["generationConfig"] = gen_cfg
 
     last_error = None
     for key in keys:
@@ -1007,7 +1025,7 @@ def _call_gemini(messages: list, timeout: int, stream: bool = False, model: str 
         if any(s in (last_error or "").lower() for s in ("not found", "404", "quota", "permission", "billing", "denied")):
             fallback_model = GEMINI_MODEL_BY_EFFORT["medium"]
             logger.warning(f"gemini: {model} unavailable on this tier ({last_error}); falling back to {fallback_model}")
-            return _call_gemini(messages, timeout, stream=stream, model=fallback_model)
+            return _call_gemini(messages, timeout, stream=stream, model=fallback_model, client_body=client_body)
 
     raise ProviderError(last_error or "gemini: all keys failed")
 
@@ -1092,7 +1110,7 @@ def call_model(messages: list, client_body: dict = None, tools=None, timeout: in
             continue
         try:
             if name == "gemini":
-                return _call_gemini(msgs, timeout, stream=stream, model=model)
+                return _call_gemini(msgs, timeout, stream=stream, model=model, client_body=client_body)
             return _call_openai_style(name, msgs, client_body, use_tools, timeout, stream=stream)
         except (ProviderError, requests.RequestException) as e:
             errors.append(f"{name}: {e}")
@@ -1120,7 +1138,7 @@ def call_model(messages: list, client_body: dict = None, tools=None, timeout: in
                 try:
                     logger.warning(f"all tool-capable providers unavailable; trying {name} without tools")
                     if name == "gemini":
-                        return _call_gemini(messages, timeout, stream=stream, model=model)
+                        return _call_gemini(messages, timeout, stream=stream, model=model, client_body=client_body)
                     return _call_openai_style(name, messages, client_body, None, timeout, stream=stream)
                 except (ProviderError, requests.RequestException) as e:
                     errors.append(f"{name} (no-tools fallback): {e}")
