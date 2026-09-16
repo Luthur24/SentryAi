@@ -1,16 +1,29 @@
 """
-Fluid Intelligence backend — updated version.
-Run:  gunicorn main:app   (or `python main.py` locally)
+Fluid Intelligence backend — Gemini-only edition.
 
-Changes in this update:
-- MAX_INPUT_TOKENS raised to 12000
-- Real SSE streaming from providers (not single-chunk shim)
-- Reasoning effort param support (Groq)
-- Response format validation with retry
-- Structured request logging
-- Per-key cooldowns (not global provider cooldowns)
-- Cloudinary URL support for images/videos
-- File text extraction (PDF via PyMuPDF/pdfminer/pdftotext, DOCX, TXT/MD/CSV)
+What changed in this edit (everything the user asked for):
+1) Gemini is now the ONLY active provider. Groq/Mistral/Zai code stays in the
+   file but is disconnected via GEMINI_ONLY=1 (default). Flip the env var to
+   re-enable the old router.
+2) Gemini key slots: GEMINI_API_KEY_1 / GEMINI_API_KEY_2 env vars, or a single
+   GEMINI_API_KEY env var with comma-separated keys.
+3) JSON mode is now driven the same way as web search: the system prompt tells
+   the model JSON mode is on and exactly what schema to produce; the backend
+   validates and retries once on failure (validate_and_fix_json kept).
+4) MAX_INPUT_TOKENS raised to the Gemini context maximum (1M), env-overridable,
+   and identical across every Gemini model we route to.
+5) Reasoning effort now maps to different Gemini models (max input stays 1M):
+      low    -> gemini-3.1-flash-lite
+      medium -> gemini-3.1-flash
+      high   -> gemini-3.1-pro
+   (model IDs are env-overridable via GEMINI_MODEL_LOW/MEDIUM/HIGH.)
+6) Tavily: the model controls it via tags, like web search already did:
+      [SEARCH: query | n=10 | depth=advanced | images=yes]
+      [FETCH: https://example.com/article]   <- full-page crawl of any URL
+   Search results can include images; those URLs are injected into context and
+   the model is explicitly allowed to reference them as markdown images
+   (![desc](url)) which the playground renders inline. Non-streaming responses
+   also carry a _search_images field.
 """
 
 import os
@@ -44,7 +57,7 @@ logger = logging.getLogger(__name__)
 # CONFIG
 # =========================================================================
 
-APP_VERSION = os.environ.get("APP_VERSION", "update-2026-09-15")
+APP_VERSION = os.environ.get("APP_VERSION", "gemini-only-2026-09-16")
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
@@ -56,18 +69,24 @@ SESSION_HOURS = 24 * 7
 EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 DAILY_REQUEST_CAP = int(os.environ.get("DAILY_REQUEST_CAP", "3000"))
-MAX_INPUT_TOKENS = int(os.environ.get("MAX_INPUT_TOKENS", "12000"))  # Raised from 8000
-MAX_TOOL_ITERATIONS = 5
+# Raised to the Gemini context maximum. Same value for every Gemini model.
+MAX_INPUT_TOKENS = int(os.environ.get("MAX_INPUT_TOKENS", "1000000"))
+MAX_TOOL_ITERATIONS = 6
+MAX_SEARCH_RESULTS = 20        # hard cap on n= the model may request per search
+MAX_FETCH_CHARS = 8000         # chars of a crawled page injected per [FETCH:]
 
 FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "*")
 
+# --- Provider selection -------------------------------------------------
+# Gemini-only is the default now. Set GEMINI_ONLY=0 to re-enable the old
+# multi-provider router (groq/mistral/zai code paths are still in the file).
+GEMINI_ONLY = os.environ.get("GEMINI_ONLY", "1") == "1"
+
 # Cloudinary config (for image/video uploads)
-# NOTE: these are server-side only. Never expose CLOUDINARY_API_SECRET to the
-# frontend/browser — anyone who saw it could fully control this Cloudinary account.
 CLOUDINARY_CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME", "ddusfl7pi")
 CLOUDINARY_API_KEY = os.environ.get("CLOUDINARY_API_KEY", "599965682593626")
 CLOUDINARY_API_SECRET = os.environ.get("CLOUDINARY_API_SECRET", "pUcb90_1jtv-rDlHXRRsfDcBK5k")
-CLOUDINARY_UPLOAD_PRESET = os.environ.get("CLOUDINARY_UPLOAD_PRESET", "")  # not needed for signed uploads
+CLOUDINARY_UPLOAD_PRESET = os.environ.get("CLOUDINARY_UPLOAD_PRESET", "")
 
 # =========================================================================
 # DATABASE
@@ -109,7 +128,6 @@ CREATE TABLE IF NOT EXISTS backend_status (
     last_error         TEXT
 );
 
--- Per-key cooldown tracking
 CREATE TABLE IF NOT EXISTS key_status (
     provider     TEXT NOT NULL,
     key_hash     TEXT NOT NULL,
@@ -169,7 +187,7 @@ def seconds_until_midnight_utc():
 
 
 # =========================================================================
-# AUTH — passwords, session tokens, API keys
+# AUTH
 # =========================================================================
 
 def hash_password(password: str) -> str:
@@ -195,7 +213,6 @@ def create_session_token(user_id: int) -> str:
 
 
 def verify_session_token(token: str):
-    """Returns (user_id, error). error is None, 'expired', or 'invalid'."""
     if not token:
         return None, "invalid"
     try:
@@ -215,7 +232,6 @@ def bearer_token():
 
 
 def require_session():
-    """Returns (user_id, http_error_tuple_or_None)."""
     token = bearer_token()
     if not token:
         return None, (jsonify(error="unauthorized"), 401)
@@ -317,24 +333,21 @@ def set_rate_limit_headers(count: int):
 
 
 # =========================================================================
-# BACKEND COOLDOWNS — PER KEY
+# BACKEND COOLDOWNS (kept for Gemini key rotation)
 # =========================================================================
 
 def _hash_key(key: str) -> str:
-    """Create a short hash for tracking without exposing the key."""
     import hashlib
     return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
 def mark_key_down(provider: str, key: str, error, cooldown_seconds: int = 30):
-    """Cooldowns are disabled — this is now a no-op. Every request tries every
-    configured key fresh, so one bad response never blocks other users from
-    a key that might work for them."""
+    """Cooldowns are disabled — no-op. Every request tries every configured
+    key fresh."""
     pass
 
 
 def get_key_cooldown_info(provider: str, key: str):
-    """Return (unavailable_until, last_error) for a key, or (None, None)."""
     key_hash = _hash_key(key)
     with get_cursor() as cur:
         cur.execute(
@@ -348,32 +361,21 @@ def get_key_cooldown_info(provider: str, key: str):
 
 
 def is_key_available(provider: str, key: str) -> bool:
-    """Cooldowns are disabled — always available."""
     return True
 
 
-# Keep old functions for backward compatibility but make them no-ops
 def mark_backend_down(name: str, error, cooldown_seconds: int = 30):
-    """Deprecated: use mark_key_down instead."""
     pass
 
 
 def is_backend_available(name: str) -> bool:
-    """Deprecated: use is_key_available instead."""
     return True
 
 
 # =========================================================================
-# MODEL PROVIDERS
+# MODEL PROVIDERS — Gemini active, others disconnected (not deleted)
 # =========================================================================
 
-# ---------------------------------------------------------------------------
-# ROUTING TABLE
-# Each provider declares what it can actually do on the free tier it runs on.
-# The router picks from this table instead of hardcoded order lists, so a
-# request always lands on a provider that can serve it — and when a provider
-# is dead/cooling down, the router moves to the next *capable* one.
-# ---------------------------------------------------------------------------
 PROVIDERS = {
     "groq": {
         "text": True, "tools": True, "media": True, "streaming": True,
@@ -389,11 +391,41 @@ PROVIDERS = {
     },
     "gemini": {
         "text": True, "tools": False, "media": True, "streaming": True,
-        "reasoning": False,
+        "reasoning": True,
     },
 }
 
 DEFAULT_ORDER = ["groq", "mistral", "zai", "gemini"]
+
+# --- Gemini: model per reasoning effort (max input identical for all: 1M) ---
+GEMINI_MODEL_DEFAULT = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash")
+GEMINI_MODEL_BY_EFFORT = {
+    "low": os.environ.get("GEMINI_MODEL_LOW", "gemini-3.1-flash-lite"),
+    "medium": os.environ.get("GEMINI_MODEL_MEDIUM", "gemini-3.1-flash"),
+    "high": os.environ.get("GEMINI_MODEL_HIGH", "gemini-3.1-pro"),
+}
+
+
+def _gemini_model_for_request(client_body: dict) -> str:
+    """Pick the Gemini model from the requested reasoning effort.
+    MAX_INPUT_TOKENS is the same (1M) for every model in this map."""
+    reasoning = (client_body or {}).get("reasoning") or {}
+    if reasoning.get("enabled"):
+        effort = (reasoning.get("effort") or "medium").lower()
+        return GEMINI_MODEL_BY_EFFORT.get(effort, GEMINI_MODEL_DEFAULT)
+    return GEMINI_MODEL_DEFAULT
+
+
+# Gemini keys — two slots, or one comma-separated GEMINI_API_KEY env var.
+GEMINI_API_KEY_ENVS = ["GEMINI_API_KEY_1", "GEMINI_API_KEY_2"]
+GEMINI_API_KEY_DEFAULTS = ["", ""]
+GEMINI_KEYS = [k.strip() for k in os.environ.get("GEMINI_API_KEY", "").split(",") if k.strip()]
+if not GEMINI_KEYS:
+    GEMINI_KEYS = [
+        os.environ.get(e, d)
+        for e, d in zip(GEMINI_API_KEY_ENVS, GEMINI_API_KEY_DEFAULTS)
+    ]
+    GEMINI_KEYS = [k for k in GEMINI_KEYS if k]
 
 OPENAI_STYLE = {
     "groq": {
@@ -431,13 +463,6 @@ OPENAI_STYLE = {
     },
 }
 
-GEMINI_API_KEY_ENVS = ["GEMINI_API_KEY_1", "GEMINI_API_KEY_2"]
-GEMINI_API_KEY_DEFAULTS = [
-    "",
-    "",
-]
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite")
-
 PASSTHROUGH_PARAMS = ("temperature", "top_p", "top_k", "max_tokens", "stop", "seed",
                       "presence_penalty", "frequency_penalty", "response_format")
 
@@ -457,9 +482,9 @@ def has_media(messages: list) -> bool:
 
 
 def _transcribe_audio_bytes(audio_bytes: bytes, filename: str = "audio.webm") -> str:
-    """Transcribe raw audio bytes via Groq's Whisper API. None of our chat
-    models take audio directly, so every voice message gets turned into text
-    before it ever reaches call_model()."""
+    """Voice notes are transcribed via Groq Whisper. NOTE: with GEMINI_ONLY=1
+    this still runs (it's transcription, not chat) — if no Groq key is valid
+    it raises and the caller falls back gracefully."""
     keys = [os.environ.get(e, d) for e, d in zip(OPENAI_STYLE["groq"]["api_key_envs"], OPENAI_STYLE["groq"]["api_key_defaults"])]
     keys = [k for k in keys if k]
     if not keys:
@@ -490,10 +515,6 @@ def _transcribe_audio_bytes(audio_bytes: bytes, filename: str = "audio.webm") ->
 
 
 def _transcribe_audio_blocks(messages: list) -> list:
-    """Replace audio_url / input_audio content blocks with their transcribed
-    text so the chat model gets something it can actually read. Runs before
-    routing/token counting, so a voice message behaves just like typed text
-    from that point on."""
     out = []
     for m in messages:
         content = m.get("content")
@@ -516,7 +537,7 @@ def _transcribe_audio_blocks(messages: list) -> list:
                     audio_resp = requests.get(url, timeout=30)
                     audio_resp.raise_for_status()
                     audio_bytes = audio_resp.content
-                else:  # input_audio -- base64-encoded data
+                else:
                     import base64
                     b64_data = (block.get("input_audio") or {}).get("data", "")
                     audio_bytes = base64.b64decode(b64_data)
@@ -545,23 +566,17 @@ def _forward_sampling_params(body: dict, client_body: dict):
 
 
 def _get_reasoning_params(provider: str, client_body: dict) -> dict:
-    """Extract reasoning params for providers that support them."""
+    """Reasoning params for providers that support them (disconnected providers kept for completeness)."""
     reasoning = client_body.get("reasoning") or {}
     if not reasoning.get("enabled"):
         return {}
-
     effort = reasoning.get("effort", "medium")
-
     if provider == "groq":
-        # Groq supports reasoning_effort
         return {"reasoning_effort": effort}
-
     return {}
 
 
 def _error_detail(resp) -> str:
-    """Pull the real error message out of a provider's response body instead
-    of the generic 'NNN Client Error' text that raise_for_status() gives."""
     try:
         data = resp.json()
         msg = (
@@ -577,6 +592,7 @@ def _error_detail(resp) -> str:
 
 
 def _call_openai_style(provider: str, messages: list, client_body: dict, tools, timeout: int, stream: bool = False):
+    """DISCONNECTED under GEMINI_ONLY=1 — kept in the file, not deleted."""
     cfg = OPENAI_STYLE[provider]
     keys = [os.environ.get(e, d) for e, d in zip(cfg["api_key_envs"], cfg["api_key_defaults"])]
     keys = [k for k in keys if k]
@@ -586,11 +602,6 @@ def _call_openai_style(provider: str, messages: list, client_body: dict, tools, 
     body = {"model": cfg["model"], "messages": messages}
     _forward_sampling_params(body, client_body or {})
 
-    # Add reasoning params if supported -- but skip when tools are active.
-    # Reasoning-effort mode and function-calling are known to fight each
-    # other on some models (the model reasons its way to a direct answer
-    # instead of ever emitting a tool call), which was silently breaking
-    # web search here.
     if cfg.get("supports_reasoning") and not tools:
         body.update(_get_reasoning_params(provider, client_body or {}))
 
@@ -598,13 +609,11 @@ def _call_openai_style(provider: str, messages: list, client_body: dict, tools, 
         body["tools"] = tools
     if cfg.get("extra_body"):
         body.update(cfg["extra_body"])
-
     if stream:
         body["stream"] = True
 
     last_error = None
     for key in keys:
-        # Check per-key cooldown
         if not is_key_available(provider, key):
             until, prev_err = get_key_cooldown_info(provider, key)
             last_error = f"{provider}: key {_hash_key(key)} still cooling down until {until} — last error: {prev_err}"
@@ -625,47 +634,26 @@ def _call_openai_style(provider: str, messages: list, client_body: dict, tools, 
             if resp.status_code == 429:
                 last_error = f"{provider}: rate limited on key {_hash_key(key)} — {_error_detail(resp)}"
                 mark_key_down(provider, key, last_error, cooldown_seconds=60)
-                logger.warning(f"{provider}: 429 on key {_hash_key(key)}, cooling down 60s")
                 continue
             if resp.status_code in (401, 403):
-                # Key is invalid/revoked/restricted -- not a transient error.
-                # Long cooldown so we fail fast and clearly instead of
-                # hammering a dead key on every request.
                 last_error = f"{provider}: key {_hash_key(key)} rejected with {resp.status_code} — {_error_detail(resp)}"
                 mark_key_down(provider, key, last_error, cooldown_seconds=6 * 3600)
-                logger.error(f"{provider}: {resp.status_code} on key {_hash_key(key)} -- {_error_detail(resp)}")
                 continue
             if resp.status_code >= 500:
                 last_error = f"{provider}: server error {resp.status_code} — {_error_detail(resp)}"
                 mark_key_down(provider, key, last_error, cooldown_seconds=30)
-                logger.warning(f"{provider}: {resp.status_code} on key {_hash_key(key)}")
                 continue
             if resp.status_code >= 400:
-                # Any other 4xx (400, 404, 422...) is almost always a bad
-                # request (e.g. this model doesn't support image input) --
-                # not a dead key. Surface the real reason, and use a short
-                # cooldown since retrying the *same* key with a *different*
-                # request could well work.
                 last_error = f"{provider}: {resp.status_code} — {_error_detail(resp)}"
                 mark_key_down(provider, key, last_error, cooldown_seconds=5)
-                logger.error(f"{provider}: {resp.status_code} on key {_hash_key(key)} -- {_error_detail(resp)}")
                 continue
 
             if stream:
-                # Return the streaming response object
-                logger.info(f"{provider}: streaming started, key {_hash_key(key)}, latency {latency:.0f}ms")
-                return {
-                    "stream": resp.iter_lines(),
-                    "provider": provider,
-                    "key_hash": _hash_key(key),
-                }
+                return {"stream": resp.iter_lines(), "provider": provider, "key_hash": _hash_key(key)}
 
             data = resp.json()
             choice = data["choices"][0]["message"]
-
             usage = data.get("usage", {})
-            logger.info(f"{provider}: success, key {_hash_key(key)}, latency {latency:.0f}ms, tokens {usage.get('prompt_tokens', '?')}/{usage.get('completion_tokens', '?')}")
-
             return {
                 "content": choice.get("content"),
                 "tool_calls": choice.get("tool_calls"),
@@ -675,24 +663,19 @@ def _call_openai_style(provider: str, messages: list, client_body: dict, tools, 
         except requests.RequestException as e:
             last_error = f"{provider}: {e}"
             mark_key_down(provider, key, last_error, cooldown_seconds=30)
-            logger.error(f"{provider}: error on key {_hash_key(key)}: {e}")
             continue
 
     raise ProviderError(last_error or f"{provider}: all keys failed")
 
 
 def _fetch_media_as_base64(url: str, max_size_mb: int = 5) -> tuple:
-    """Fetch a media URL and return (base64_data, mime_type)."""
     try:
         resp = requests.get(url, timeout=30, stream=True)
         resp.raise_for_status()
-
-        # Check content length if available
         content_length = resp.headers.get('content-length')
         if content_length and int(content_length) > max_size_mb * 1024 * 1024:
             raise ProviderError(f"Media too large: {int(content_length) / 1024 / 1024:.1f}MB > {max_size_mb}MB")
 
-        # Download with size limit
         chunks = []
         total_size = 0
         for chunk in resp.iter_content(chunk_size=8192):
@@ -705,10 +688,8 @@ def _fetch_media_as_base64(url: str, max_size_mb: int = 5) -> tuple:
         import base64
         b64 = base64.b64encode(data).decode('utf-8')
 
-        # Determine mime type from URL or content-type header
         content_type = resp.headers.get('content-type', '').split(';')[0]
         if not content_type:
-            # Guess from URL extension
             ext = url.split('.')[-1].lower().split('?')[0]
             mime_map = {
                 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png',
@@ -723,9 +704,6 @@ def _fetch_media_as_base64(url: str, max_size_mb: int = 5) -> tuple:
 
 
 def _media_messages_to_data_urls(messages: list) -> list:
-    """Convert remote image URLs in messages to data: URLs so a media request
-    can still be served by OpenAI-style vision providers when Gemini is down
-    or its keys are invalid."""
     converted = []
     for m in messages:
         content = m.get("content")
@@ -785,7 +763,6 @@ def _messages_to_gemini_contents(messages: list):
                         mime, _, b64data = url.partition(";base64,")
                         parts.append({"inline_data": {"mime_type": mime.replace("data:", ""), "data": b64data}})
                     elif url.startswith("https://"):
-                        # Fetch hosted image (e.g., Cloudinary)
                         try:
                             b64, mime = _fetch_media_as_base64(url, max_size_mb=5)
                             parts.append({"inline_data": {"mime_type": mime, "data": b64}})
@@ -802,7 +779,6 @@ def _messages_to_gemini_contents(messages: list):
                             logger.warning(f"Failed to fetch video: {e}")
                             parts.append({"text": f"[Video unavailable: {str(e)}]"})
                 elif block.get("type") == "file_url":
-                    # Handle file attachments - extract text
                     url = block.get("file_url", {}).get("url", "")
                     if url.startswith("https://"):
                         try:
@@ -822,13 +798,10 @@ def _messages_to_gemini_contents(messages: list):
 
 
 def _extract_text_from_url(url: str) -> str:
-    """Extract text from a file URL (PDF, DOCX, TXT, etc.)."""
     try:
         resp = requests.get(url, timeout=30)
         resp.raise_for_status()
         content_type = resp.headers.get('content-type', '').lower()
-
-        # Determine file type from URL or content-type
         ext = url.split('.')[-1].lower().split('?')[0]
 
         if 'pdf' in content_type or ext == 'pdf':
@@ -836,27 +809,24 @@ def _extract_text_from_url(url: str) -> str:
         elif 'word' in content_type or ext in ('docx', 'doc'):
             return _extract_docx_text(resp.content)
         elif 'text' in content_type or ext in ('txt', 'md', 'csv'):
-            return resp.text[:100000]  # Limit to 100KB of text
+            return resp.text[:100000]
         else:
-            # Try to decode as text
             try:
                 return resp.text[:100000]
-            except:
+            except Exception:
                 return "[Unsupported file type]"
     except requests.RequestException as e:
         raise ProviderError(f"Failed to fetch file: {e}")
 
 
 def _extract_pdf_text(content: bytes) -> str:
-    """Extract text from PDF content using available libraries."""
-    # Try PyMuPDF first
     try:
-        import fitz  # PyMuPDF
+        import fitz
         doc = fitz.open(stream=content, filetype="pdf")
         text = ""
         for page in doc:
             text += page.get_text()
-            if len(text) > 100000:  # Limit output
+            if len(text) > 100000:
                 text += "\n\n[content truncated]"
                 break
         doc.close()
@@ -864,7 +834,6 @@ def _extract_pdf_text(content: bytes) -> str:
     except ImportError:
         pass
 
-    # Try pdfminer
     try:
         from pdfminer.high_level import extract_text
         import io
@@ -873,7 +842,6 @@ def _extract_pdf_text(content: bytes) -> str:
     except ImportError:
         pass
 
-    # Fall back to pdftotext command
     try:
         import subprocess
         import tempfile
@@ -893,7 +861,6 @@ def _extract_pdf_text(content: bytes) -> str:
 
 
 def _extract_docx_text(content: bytes) -> str:
-    """Extract text from DOCX content."""
     try:
         import docx
         import io
@@ -904,21 +871,19 @@ def _extract_docx_text(content: bytes) -> str:
         return "[DOCX support not available. Install python-docx or convert to PDF/TXT]"
 
 
-def _call_gemini(messages: list, timeout: int, stream: bool = False):
-    keys = [os.environ.get(e, d) for e, d in zip(GEMINI_API_KEY_ENVS, GEMINI_API_KEY_DEFAULTS)]
-    keys = [k for k in keys if k]
+def _call_gemini(messages: list, timeout: int, stream: bool = False, model: str = None):
+    """The one active provider. Model is chosen per reasoning effort."""
+    model = model or GEMINI_MODEL_DEFAULT
+    keys = GEMINI_KEYS
     if not keys:
-        raise ProviderError("gemini: no API keys configured")
+        raise ProviderError("gemini: no API keys configured (set GEMINI_API_KEY or GEMINI_API_KEY_1/2)")
 
     body = {"contents": _messages_to_gemini_contents(messages)}
-
-    # Add streaming config if needed
     if stream:
         body["generationConfig"] = {"maxOutputTokens": 8192}
 
     last_error = None
     for key in keys:
-        # Check per-key cooldown
         if not is_key_available("gemini", key):
             until, prev_err = get_key_cooldown_info("gemini", key)
             last_error = f"gemini: key {_hash_key(key)} still cooling down until {until} — last error: {prev_err}"
@@ -929,9 +894,8 @@ def _call_gemini(messages: list, timeout: int, stream: bool = False):
             start_time = dt.datetime.now()
             url = (
                 f"https://generativelanguage.googleapis.com/v1beta/models/"
-                f"{GEMINI_MODEL}:{'streamGenerateContent' if stream else 'generateContent'}?key={key}"
+                f"{model}:{'streamGenerateContent' if stream else 'generateContent'}?key={key}"
             )
-
             if stream:
                 url += "&alt=sse"
 
@@ -960,10 +924,11 @@ def _call_gemini(messages: list, timeout: int, stream: bool = False):
                 continue
 
             if stream:
-                logger.info(f"gemini: streaming started, key {_hash_key(key)}, latency {latency:.0f}ms")
+                logger.info(f"gemini({model}): streaming started, key {_hash_key(key)}, latency {latency:.0f}ms")
                 return {
                     "stream": resp.iter_lines(),
                     "provider": "gemini",
+                    "model": model,
                     "key_hash": _hash_key(key),
                 }
 
@@ -971,9 +936,9 @@ def _call_gemini(messages: list, timeout: int, stream: bool = False):
             text = data["candidates"][0]["content"]["parts"][0]["text"]
 
             usage = data.get("usageMetadata", {})
-            logger.info(f"gemini: success, key {_hash_key(key)}, latency {latency:.0f}ms, tokens {usage.get('promptTokenCount', '?')}/{usage.get('candidatesTokenCount', '?')}")
+            logger.info(f"gemini({model}): success, key {_hash_key(key)}, latency {latency:.0f}ms, tokens {usage.get('promptTokenCount', '?')}/{usage.get('candidatesTokenCount', '?')}")
 
-            return {"content": text, "tool_calls": None, "provider": "gemini", "usage": usage}
+            return {"content": text, "tool_calls": None, "provider": "gemini", "model": model, "usage": usage}
         except requests.RequestException as e:
             last_error = f"gemini: {e}"
             mark_key_down("gemini", key, last_error, cooldown_seconds=30)
@@ -984,50 +949,38 @@ def _call_gemini(messages: list, timeout: int, stream: bool = False):
 
 
 def _rank_providers(messages: list, tools, stream: bool, client_body: dict) -> list:
-    """Rank all capable providers for this request.
-
-    Scoring (lower = better):
-      +0  primary path — provider natively supports everything requested
-      +2  media fallback — media request served via data-URL conversion
-      +3  tool fallback — tools stripped, Tavily pre-search injected instead
-    """
+    """Capability ranking — only used when GEMINI_ONLY=0."""
     needs_media = has_media(messages)
     needs_tools = bool(tools)
     wants_reasoning = bool(((client_body or {}).get("reasoning") or {}).get("enabled"))
 
-    candidates = []  # (score, position_in_DEFAULT_ORDER, name, converted_msgs, use_tools)
+    candidates = []
     for pos, name in enumerate(DEFAULT_ORDER):
         caps = PROVIDERS[name]
         if not caps["text"]:
             continue
-        score = pos  # base preference from DEFAULT_ORDER
+        score = pos
 
         use_tools = needs_tools
         msgs = messages
 
         if needs_media:
             if caps["media"]:
-                # Native media provider — boost above text-only providers
-                # so gemini/groq-vision are tried before mistral/zai.
                 score -= 5
             elif caps["text"]:
-                # Can serve media if we convert remote URLs to data URLs.
-                # +10 ensures every native-media provider is tried first.
                 score += 10
             else:
                 continue
 
         if needs_tools:
             if caps["tools"]:
-                pass  # native tool support
+                pass
             else:
-                # Can't do tools — will strip them and pre-inject Tavily results.
-                # +10 ensures every tool-capable provider is tried first.
                 score += 10
                 use_tools = False
 
         if wants_reasoning and caps.get("reasoning"):
-            score -= 1  # slight boost — provider handles reasoning natively
+            score -= 1
 
         candidates.append((score, pos, name, msgs, use_tools))
 
@@ -1036,29 +989,23 @@ def _rank_providers(messages: list, tools, stream: bool, client_body: dict) -> l
 
 
 def call_model(messages: list, client_body: dict = None, tools=None, timeout: int = 30, order=None, stream: bool = False):
-    """Route a request to the best provider that can actually serve it.
-
-    Strategy per request shape:
-      text only        -> groq / mistral / zai (skip gemini unless others dead)
-      text + tools     -> groq / mistral / zai (gemini can't do tools)
-      text + media     -> gemini first; if dead, groq with data-URL conversion
-      text + tools + media -> gemini can't do tools; groq does both natively
-      any + streaming  -> same routing, streaming passed through
-    """
+    """Route to a provider. With GEMINI_ONLY=1 (default) everything goes to
+    Gemini with the effort-based model pick; other providers stay in the file
+    but are disconnected."""
     errors = []
 
-    # Explicit order override (env or caller) still respected
-    if order is not None:
+    if GEMINI_ONLY:
+        names = ["gemini"]
+    elif order is not None:
         names = order
     else:
         env_order = os.environ.get("PROVIDER_ORDER")
         if env_order:
             names = [p.strip() for p in env_order.split(",")]
         else:
-            names = None  # use capability ranking
+            names = None
 
     if names:
-        # Legacy explicit-order path: filter to capable providers only
         needs_media = has_media(messages)
         needs_tools = bool(tools)
         ranked = []
@@ -1074,87 +1021,82 @@ def call_model(messages: list, client_body: dict = None, tools=None, timeout: in
     else:
         ranked = _rank_providers(messages, tools, stream, client_body)
 
-    # --- Pass 1: try every capable provider, native capabilities only ---
+    model = _gemini_model_for_request(client_body)
+
     for score, pos, name, msgs, use_tools in ranked:
-        # Media fallback entries (score penalty) are tried in pass 2
         if score >= 2:
             continue
         try:
             if name == "gemini":
-                return _call_gemini(msgs, timeout, stream=stream)
+                return _call_gemini(msgs, timeout, stream=stream, model=model)
             return _call_openai_style(name, msgs, client_body, use_tools, timeout, stream=stream)
         except (ProviderError, requests.RequestException) as e:
             errors.append(f"{name}: {e}")
             logger.error(f"Provider {name} failed: {e}")
             continue
 
-    # --- Pass 2: media fallback — convert remote URLs to data URLs ---
-    if has_media(messages) and not stream:
-        for score, pos, name, msgs, use_tools in ranked:
-            if score < 2 or PROVIDERS[name]["media"]:
-                continue
-            try:
-                converted = _media_messages_to_data_urls(messages)
-                logger.warning(f"native media provider(s) unavailable; trying {name} with data-URL conversion")
-                return _call_openai_style(name, converted, client_body, use_tools, timeout, stream=stream)
-            except (ProviderError, requests.RequestException) as e:
-                errors.append(f"{name} (media fallback): {e}")
-                logger.error(f"Provider {name} media fallback failed: {e}")
-                continue
-            except ProviderError as e:
-                errors.append(f"media conversion: {e}")
+    if not GEMINI_ONLY:
+        if has_media(messages) and not stream:
+            for score, pos, name, msgs, use_tools in ranked:
+                if score < 2 or PROVIDERS[name]["media"]:
+                    continue
+                try:
+                    converted = _media_messages_to_data_urls(messages)
+                    logger.warning(f"native media provider(s) unavailable; trying {name} with data-URL conversion")
+                    return _call_openai_style(name, converted, client_body, use_tools, timeout, stream=stream)
+                except (ProviderError, requests.RequestException) as e:
+                    errors.append(f"{name} (media fallback): {e}")
+                    logger.error(f"Provider {name} media fallback failed: {e}")
+                    continue
 
-    # --- Pass 3: tool fallback — strip tools, answer without them ---
-    # (only reached when every tool-capable provider is dead)
-    if tools:
-        for score, pos, name, msgs, use_tools in ranked:
-            if use_tools:
-                continue  # already tried in pass 1
-            try:
-                logger.warning(f"all tool-capable providers unavailable; trying {name} without tools")
-                if name == "gemini":
-                    return _call_gemini(messages, timeout, stream=stream)
-                return _call_openai_style(name, messages, client_body, None, timeout, stream=stream)
-            except (ProviderError, requests.RequestException) as e:
-                errors.append(f"{name} (no-tools fallback): {e}")
-                logger.error(f"Provider {name} no-tools fallback failed: {e}")
-                continue
+        if tools:
+            for score, pos, name, msgs, use_tools in ranked:
+                if use_tools:
+                    continue
+                try:
+                    logger.warning(f"all tool-capable providers unavailable; trying {name} without tools")
+                    if name == "gemini":
+                        return _call_gemini(messages, timeout, stream=stream, model=model)
+                    return _call_openai_style(name, messages, client_body, None, timeout, stream=stream)
+                except (ProviderError, requests.RequestException) as e:
+                    errors.append(f"{name} (no-tools fallback): {e}")
+                    logger.error(f"Provider {name} no-tools fallback failed: {e}")
+                    continue
 
     raise ProviderError("All providers/keys failed -> " + " | ".join(errors))
 
 
 # =========================================================================
-# RESPONSE FORMAT VALIDATION
+# RESPONSE FORMAT VALIDATION (JSON mode)
 # =========================================================================
 
 def validate_and_fix_json(content: str, response_format: dict, messages: list, client_body: dict, api_key_id: int) -> str:
-    """Validate JSON response, retry once if invalid."""
+    """Validate JSON, retry once at temperature=0 with a stricter instruction."""
     if not response_format:
         return content
 
     try:
         json.loads(content)
-        return content  # Valid JSON
+        return content
     except json.JSONDecodeError:
         pass
 
-    # Retry with stricter prompt
     logger.info("JSON validation failed, retrying with temperature=0")
 
     retry_body = dict(client_body or {})
     retry_body["temperature"] = 0
+    retry_body["_json_retry"] = True  # signal to build the stricter system prompt
 
-    # Add system message instructing valid JSON
     retry_messages = list(messages)
     retry_messages.insert(0, {
         "role": "system",
-        "content": "You must respond with valid JSON only. No markdown, no explanation, just pure JSON."
+        "content": "JSON MODE RETRY: your previous response was not valid JSON. Respond with valid JSON only — no markdown fences, no commentary, no trailing text. Match the requested schema exactly."
     })
 
     try:
         result = call_model(retry_messages, client_body=retry_body)
         retry_content = result["content"]
-        json.loads(retry_content)  # Validate
+        json.loads(retry_content)
         return retry_content
     except (json.JSONDecodeError, ProviderError) as e:
         logger.error(f"JSON retry failed: {e}")
@@ -1162,7 +1104,7 @@ def validate_and_fix_json(content: str, response_format: dict, messages: list, c
 
 
 # =========================================================================
-# TOOLS — Tavily live web search
+# TOOLS — Tavily live web search + page crawl (model-controlled via tags)
 # =========================================================================
 
 TAVILY_KEYS = [
@@ -1170,101 +1112,159 @@ TAVILY_KEYS = [
     os.environ.get("TAVILY_API_KEY_2", "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"),
 ]
 
-WEB_SEARCH_TOOL_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "web_search",
-        "description": "Search the live web for current information.",
-        "parameters": {
-            "type": "object",
-            "properties": {"query": {"type": "string", "description": "Search query"}},
-            "required": ["query"],
-        },
-    },
-}
+
+def _pick_tavily_key():
+    for key in TAVILY_KEYS:
+        if key:
+            return key
+    return None
 
 
-def web_search(query: str, max_results: int = 5):
+def web_search(query: str, max_results: int = 5, search_depth: str = "basic",
+               include_images: bool = True):
+    """Tavily search with images. Returns {"results": [...], "images": [...]}.
+    search_depth: "basic" | "advanced" (advanced crawls more, costs more)."""
+    max_results = max(1, min(int(max_results), MAX_SEARCH_RESULTS))
     last_error = None
     for key in TAVILY_KEYS:
+        if not key:
+            continue
         try:
             resp = requests.post(
                 "https://api.tavily.com/search",
-                json={"api_key": key, "query": query, "max_results": max_results},
-                timeout=15,
+                json={
+                    "api_key": key,
+                    "query": query,
+                    "max_results": max_results,
+                    "search_depth": search_depth,
+                    "include_images": include_images,
+                    "include_image_descriptions": include_images,
+                },
+                timeout=20,
             )
             if resp.status_code == 429:
                 last_error = "rate limited"
                 continue
             resp.raise_for_status()
             data = resp.json()
-            return [
+            results = [
                 {"title": r.get("title"), "url": r.get("url"), "content": r.get("content")}
                 for r in data.get("results", [])
             ]
+            images = [
+                {"url": img.get("url"), "description": img.get("description") or ""}
+                for img in (data.get("images") or [])
+                if img.get("url")
+            ][:10]
+            return {"results": results, "images": images}
         except requests.RequestException as e:
             last_error = str(e)
             continue
     raise RuntimeError(f"Tavily search failed on all keys: {last_error}")
 
 
-TOOL_IMPLEMENTATIONS = {"web_search": web_search}
+def fetch_page_text(url: str, max_chars: int = MAX_FETCH_CHARS) -> tuple:
+    """Crawl any URL and return (title, visible text). Used for [FETCH: url]."""
+    import html as html_mod
+
+    resp = requests.get(
+        url,
+        timeout=20,
+        headers={"User-Agent": "Mozilla/5.0 (compatible; SentryBot/1.0; +https://api.sentryai.ai)"},
+    )
+    resp.raise_for_status()
+    raw = resp.text
+
+    m = re.search(r"(?is)<title[^>]*>(.*?)</title>", raw)
+    title = re.sub(r"\s+", " ", m.group(1)).strip() if m else url
+
+    raw = re.sub(r"(?is)<(script|style|noscript|svg|header|footer|nav)[^>]*>.*?</\1>", " ", raw)
+    raw = re.sub(r"(?i)<br\s*/?>", "\n", raw)
+    raw = re.sub(r"(?i)</(p|div|li|h1|h2|h3|h4|h5|h6|tr|td|th|blockquote)>", "\n", raw)
+    text = re.sub(r"(?s)<[^>]+>", " ", raw)
+    text = html_mod.unescape(text)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n\s*\n+", "\n\n", text).strip()
+
+    return title, text[:max_chars]
 
 
-def _inject_tavily_results(messages: list, query: str, max_results: int = 5) -> list:
-    """Run a Tavily search and inject the results into the conversation as
-    context, so the model can answer with live data even when no provider
-    is available to do native tool-calling."""
-    try:
-        results = web_search(query, max_results=max_results)
-        if not results:
-            return messages
-        lines = ["Live web search results (use these to answer):"]
-        for r in results:
-            snippet = (r.get("content") or "")[:400]
-            lines.append(f'- {r.get("title")}\n  {r.get("url")}\n  {snippet}')
-        context = "\n\n".join(lines)
-        injected = list(messages)
-        injected.insert(-1, {"role": "system", "content": context})
-        return injected
-    except Exception as e:
-        logger.warning(f"Tavily pre-search failed: {e}")
-        return messages
-
+TOOL_IMPLEMENTATIONS = {"web_search": web_search, "fetch_page": fetch_page_text}
 
 SEARCH_TAG_RE = re.compile(r"\[SEARCH:\s*(.+?)\]", re.IGNORECASE | re.DOTALL)
+FETCH_TAG_RE = re.compile(r"\[FETCH:\s*(https?://[^\s\]]+)\]", re.IGNORECASE)
+
+
+def _parse_search_tag(raw: str):
+    """[SEARCH: query | n=10 | depth=advanced | images=no] -> (query, opts)."""
+    parts = [p.strip() for p in raw.split("|")]
+    query = parts[0]
+    opts = {}
+    for p in parts[1:]:
+        if "=" in p:
+            k, v = p.split("=", 1)
+            opts[k.strip().lower()] = v.strip()
+    return query, opts
 
 
 def _extract_search_tags(text: str):
-    """Pull every [SEARCH: query] tag out of the model's plain-text output.
-
-    This is the text convention documented in the system prompt (see
-    completion_core). We never send the model a native function-calling
-    schema for web_search -- it's purely a text instruction -- so this is
-    the only place a search request actually gets detected and acted on.
-    """
     if not text:
         return []
     return [q.strip() for q in SEARCH_TAG_RE.findall(text) if q.strip()]
 
 
+def _extract_fetch_tags(text: str):
+    if not text:
+        return []
+    return [u.strip() for u in FETCH_TAG_RE.findall(text) if u.strip()]
+
+
+def _format_search_context(query, search_data) -> str:
+    lines = [f'Search results for "{query}":']
+    for i, r in enumerate(search_data.get("results", []), 1):
+        snippet = (r.get("content") or "")[:400]
+        lines.append(f'{i}. {r.get("title")}\n   {r.get("url")}\n   {snippet}')
+    images = search_data.get("images") or []
+    if images:
+        lines.append("")
+        lines.append("Images found (you may embed any of these in your answer as markdown: ![description](url)):")
+        for img in images:
+            desc = img.get("description") or "image"
+            lines.append(f'- {img.get("url")} — {desc}')
+    return "\n".join(lines)
+
+
+def _inject_tavily_results(messages: list, query: str, max_results: int = 5) -> tuple:
+    """Provider-degraded fallback: search the user's question, inject context.
+    Returns (messages, images)."""
+    try:
+        search_data = web_search(query, max_results=max_results)
+        if not search_data.get("results"):
+            return messages, []
+        context = _format_search_context(query, search_data)
+        injected = list(messages)
+        injected.insert(-1, {"role": "system", "content": context})
+        return injected, search_data.get("images", [])
+    except Exception as e:
+        logger.warning(f"Tavily pre-search failed: {e}")
+        return messages, []
+
+
 def run_agentic_completion(messages: list, client_body: dict = None, web_search_enabled: bool = True, stream: bool = False):
-    """Model -> [SEARCH: query] tags -> results -> model, until the model
-    stops asking for search or MAX_TOOL_ITERATIONS is hit.
+    """Model -> [SEARCH: ...] / [FETCH: ...] tags -> real results injected ->
+    model again, until no tags appear or MAX_TOOL_ITERATIONS is hit.
 
-    Search requests are detected by scanning the model's text output for
-    the [SEARCH: ...] tag the system prompt tells it to use -- there's no
-    provider-native tool_calls involved. When one or more tags show up, we
-    run each query against Tavily ourselves, feed the results back in as
-    plain context, and call the model again for a fresh answer.
-
-    If a model call fails outright (independent of search), falls back to:
-      1. Tavily pre-search — search the user's question first, inject
-         results as context, then call the model again.
-      2. Re-raising if Tavily is also unavailable / already tried.
+    The Gemini model controls Tavily directly through tags:
+      [SEARCH: your query]                          basic search, ~5 results + images
+      [SEARCH: your query | n=10]                   up to 20 results
+      [SEARCH: your query | depth=advanced]         deeper crawl search
+      [SEARCH: your query | images=no]              text-only results
+      [FETCH: https://example.com/page]             crawl that exact page
     """
     working = list(messages)
     degraded = False
+    collected_images = []
+    default_max_results = int(((client_body or {}).get("web_search") or {}).get("max_results") or 5)
 
     for iteration in range(MAX_TOOL_ITERATIONS):
         is_final = (iteration == MAX_TOOL_ITERATIONS - 1)
@@ -1275,12 +1275,9 @@ def run_agentic_completion(messages: list, client_body: dict = None, web_search_
         except ProviderError as e:
             if not web_search_enabled or degraded:
                 raise
-            # Every provider failed outright. Fall back to Tavily
-            # pre-search instead of returning a 502.
             logger.warning(f"Model call failed ({e}); falling back to Tavily pre-search")
             degraded = True
 
-            # Extract the user's last message as the search query
             last_user = ""
             for m in reversed(working):
                 if m.get("role") == "user":
@@ -1289,48 +1286,143 @@ def run_agentic_completion(messages: list, client_body: dict = None, web_search_
                     break
 
             if last_user:
-                working = _inject_tavily_results(working, last_user)
+                working, imgs = _inject_tavily_results(working, last_user)
+                collected_images.extend(imgs)
 
             result = call_model(working, client_body=client_body, tools=None, stream=False)
 
         if should_stream and "stream" in result and not degraded:
-            # Return streaming response for final iteration
             return {
                 "stream": result["stream"],
                 "provider": result["provider"],
+                "model": result.get("model"),
                 "streaming": True,
+                "images": collected_images,
             }
 
         content = result.get("content") or ""
-        queries = _extract_search_tags(content) if web_search_enabled else []
+        search_tags = _extract_search_tags(content) if web_search_enabled else []
+        fetch_tags = _extract_fetch_tags(content) if web_search_enabled else []
 
-        if not queries:
-            out = {"content": content, "provider": result["provider"], "streaming": False}
+        if not search_tags and not fetch_tags:
+            out = {
+                "content": content,
+                "provider": result["provider"],
+                "model": result.get("model"),
+                "streaming": False,
+                "images": collected_images,
+            }
             if degraded:
                 out["web_search_degraded"] = True
             return out
 
-        # Keep the model's own [SEARCH: ...] message in the transcript for
-        # context, then inject real results and loop back for a real answer.
+        # Keep the model's tag message for context, inject real results, loop.
         working.append({"role": "assistant", "content": content})
-        for query in queries:
+
+        for raw_tag in search_tags:
+            query, opts = _parse_search_tag(raw_tag)
+            if not query:
+                continue
+            n = int(opts.get("n", default_max_results) or default_max_results)
+            depth = opts.get("depth", "basic")
+            include_images = opts.get("images", "yes").lower() not in ("no", "false", "0")
             try:
-                tool_output = web_search(query)
+                search_data = web_search(query, max_results=n, search_depth=depth, include_images=include_images)
+                collected_images.extend(search_data.get("images", []))
+                tool_output = _format_search_context(query, search_data)
             except Exception as e:
-                tool_output = {"error": str(e)}
+                tool_output = f'Search for "{query}" failed: {e}'
             working.append({
                 "role": "system",
                 "content": (
-                    f'Search results for "{query}":\n{json.dumps(tool_output)}\n\n'
-                    "Answer the user using these results. Only output another "
-                    "[SEARCH: ...] tag if you genuinely need a different query."
+                    f"{tool_output}\n\n"
+                    "Answer using these results. Only output another [SEARCH: ...] "
+                    "tag if you genuinely need a different query, or [FETCH: url] to "
+                    "read a specific page in full."
                 ),
             })
 
-    out = {"content": "I wasn't able to finish that within the search-iteration limit.", "provider": None, "streaming": False}
+        for url in fetch_tags:
+            try:
+                title, text = fetch_page_text(url)
+                tool_output = f'Fetched page: {title}\nURL: {url}\n\n{text}'
+            except Exception as e:
+                tool_output = f'Failed to fetch {url}: {e}'
+            working.append({
+                "role": "system",
+                "content": (
+                    f"{tool_output}\n\n"
+                    "Use this page content to answer. You may [FETCH: another-url] if needed."
+                ),
+            })
+
+    out = {
+        "content": "I wasn't able to finish that within the search-iteration limit.",
+        "provider": None,
+        "streaming": False,
+        "images": collected_images,
+    }
     if degraded:
         out["web_search_degraded"] = True
     return out
+
+
+# =========================================================================
+# SYSTEM PROMPT — web search + JSON mode, same pattern
+# =========================================================================
+
+def build_system_prompt(body: dict, is_json_retry: bool = False) -> str:
+    web_cfg = body.get("web_search") or {}
+    web_enabled = bool(web_cfg.get("enabled"))
+    default_max_results = int(web_cfg.get("max_results") or 5)
+    response_format = body.get("response_format")
+    json_enabled = bool(response_format)
+
+    lines = ["You are Sentry 1, an AI assistant accessed via the Fluid Intelligence API."]
+
+    # ---- live web search (Tavily), model-controlled via tags ----
+    if web_enabled:
+        lines.append("")
+        lines.append("LIVE WEB SEARCH (Tavily) — currently ENABLED. You control it directly by outputting tags in your reply:")
+        lines.append('- [SEARCH: your query]  — search the live web (default ~%d results, includes images)' % default_max_results)
+        lines.append('- [SEARCH: your query | n=10]  — control how many results (max 20)')
+        lines.append('- [SEARCH: your query | depth=advanced]  — deeper, more thorough crawl search')
+        lines.append('- [SEARCH: your query | images=no]  — text-only results')
+        lines.append('- [FETCH: https://example.com/page]  — crawl one specific URL and read its full text')
+        lines.append("")
+        lines.append("SEARCH RULES:")
+        lines.append("- Only use these tags for current events, news, prices, weather, or data that may have changed recently.")
+        lines.append("- Do NOT use them for general knowledge, math, coding, or historical facts.")
+        lines.append("- After results are injected, answer using them. Don't re-search the same thing.")
+        lines.append("- If Tavily returns images, you MAY embed them in your answer as markdown images, e.g. ![description](image-url), when a visual reference genuinely helps.")
+        lines.append("- You may also cite sources as normal markdown links.")
+    else:
+        lines.append("")
+        lines.append("LIVE WEB SEARCH (Tavily) — currently DISABLED by the user.")
+        lines.append("- If asked about current events, news, prices, weather, or recent data, say search is available but turned off and suggest enabling it.")
+        lines.append("- Do not pretend to search. Answer general knowledge directly.")
+
+    # ---- JSON mode, same pattern: enabled via system prompt + enforced server-side ----
+    if json_enabled and not is_json_retry:
+        lines.append("")
+        lines.append("JSON MODE — currently ENABLED. Your entire reply MUST be a single valid JSON value:")
+        if isinstance(response_format, dict) and response_format.get("type") == "json_schema":
+            schema = (response_format.get("json_schema") or {}).get("schema")
+            if schema:
+                lines.append("You MUST conform to this JSON schema exactly:")
+                lines.append(json.dumps(schema, indent=2))
+        else:
+            lines.append("Respond with a JSON object that best fits the request.")
+        lines.append("")
+        lines.append("JSON RULES:")
+        lines.append("- Output raw JSON only: no markdown code fences, no explanation before or after, no trailing commas, no comments.")
+        lines.append("- The server validates your output; invalid JSON triggers a retry, so get it right the first time.")
+
+    if is_json_retry:
+        lines.append("")
+        lines.append("JSON MODE RETRY: your previous reply was not valid JSON. Output corrected raw JSON only, conforming to the schema above. No markdown fences, no commentary.")
+
+    return "\n".join(lines)
 
 
 # =========================================================================
@@ -1338,7 +1430,7 @@ def run_agentic_completion(messages: list, client_body: dict = None, web_search_
 # =========================================================================
 
 def sse_stream_generator(stream_data):
-    """Generate SSE format from provider stream."""
+    """SSE format from provider stream. Gemini lines pass through as-is."""
     try:
         for line in stream_data:
             if isinstance(line, bytes):
@@ -1346,18 +1438,11 @@ def sse_stream_generator(stream_data):
             if not line:
                 continue
             if line.startswith('data: '):
-                # Already SSE format from Gemini
                 yield line + '\n\n'
             elif line.startswith('{'):
-                # OpenAI-style chunk
                 try:
                     chunk = json.loads(line)
-                    # Normalize to OpenAI chunk format
-                    if 'choices' in chunk:
-                        yield f"data: {json.dumps(chunk)}\n\n"
-                    else:
-                        # Gemini format - convert
-                        yield f"data: {json.dumps(chunk)}\n\n"
+                    yield f"data: {json.dumps(chunk)}\n\n"
                 except json.JSONDecodeError:
                     continue
         yield "data: [DONE]\n\n"
@@ -1390,7 +1475,8 @@ def create_app():
 
     @app.get("/healthz")
     def healthz():
-        return jsonify(ok=True, version=APP_VERSION)
+        return jsonify(ok=True, version=APP_VERSION, gemini_only=GEMINI_ONLY,
+                       gemini_keys_configured=len(GEMINI_KEYS))
 
     @app.get("/version")
     def version():
@@ -1407,8 +1493,12 @@ def create_app():
 
     @app.get("/v1/models")
     def list_models():
-        resp = jsonify(data=[{"id": "sentry-1", "object": "model"}])
-        return resp
+        return jsonify(data=[
+            {"id": "sentry-1", "object": "model"},
+            {"id": "gemini-3.1-flash-lite", "object": "model"},
+            {"id": "gemini-3.1-flash", "object": "model"},
+            {"id": "gemini-3.1-pro", "object": "model"},
+        ])
 
     # ---------- auth ----------
 
@@ -1545,7 +1635,6 @@ def create_app():
 
     @app.post("/console/upload")
     def upload_to_cloudinary():
-        """Upload a file to Cloudinary and return the URL."""
         user_id, err = require_session()
         if err:
             return err
@@ -1557,7 +1646,6 @@ def create_app():
         if file.filename == '':
             return jsonify(error="no file selected"), 400
 
-        # Check file size (10MB max)
         file.seek(0, os.SEEK_END)
         size = file.tell()
         file.seek(0)
@@ -1598,41 +1686,13 @@ def create_app():
     # ---------- completions (shared core, two auth front-ends) ----------
 
     def completion_core(body: dict, api_key_id: int):
-        """Returns (response_dict, status, count_after_increment)."""
+        """Returns (response_dict_or_flask_response_parts, status, count)."""
         messages = body.get("messages") or []
         if not messages:
             return {"error": {"message": "messages required"}}, 400, None
 
-        # Inject system message with tool awareness
-        web_search_enabled = bool((body.get("web_search") or {}).get("enabled"))
-
-        if web_search_enabled:
-            system_content = """You are Sentry 1, an AI assistant accessed via the Fluid Intelligence API.
-
-AVAILABLE TOOLS:
-- web_search: Search the live web for current information.
-
-TOOL USAGE RULES:
-- To use web_search, output: [SEARCH: your query here]
-- Only use [SEARCH: ...] for current events, news, prices, weather, or recent data
-- Do NOT use [SEARCH: ...] for general knowledge, math, coding, or historical facts
-- After search results are provided, answer using those results
-
-Search is currently ENABLED."""
-        else:
-            system_content = """You are Sentry 1, an AI assistant accessed via the Fluid Intelligence API.
-
-AVAILABLE TOOLS:
-- web_search: Search the live web for current information (currently DISABLED)
-
-TOOL USAGE RULES:
-- web_search is currently turned OFF by the user
-- If asked about current events, news, prices, weather, or recent data, inform the user that web search is disabled and suggest they enable it
-- Do not pretend to search or claim you cannot access the internet - simply explain that search is available but turned off
-- For general knowledge, math, coding, or historical facts, answer directly without mentioning search
-
-Search is currently DISABLED. User can enable it by toggling web_search to true."""
-
+        is_json_retry = bool(body.get("_json_retry"))
+        system_content = build_system_prompt(body, is_json_retry=is_json_retry)
         messages.insert(0, {"role": "system", "content": system_content})
 
         try:
@@ -1658,8 +1718,8 @@ Search is currently DISABLED. User can enable it by toggling web_search to true.
 
         try:
             result = run_agentic_completion(
-                messages, 
-                client_body=body, 
+                messages,
+                client_body=body,
                 web_search_enabled=web_search_enabled,
                 stream=stream
             )
@@ -1673,6 +1733,8 @@ Search is currently DISABLED. User can enable it by toggling web_search to true.
                 "streaming": True,
                 "stream": result["stream"],
                 "provider": result["provider"],
+                "model": result.get("model"),
+                "images": result.get("images", []),
             }, 200, count
 
         # Validate JSON if response_format requested
@@ -1695,22 +1757,36 @@ Search is currently DISABLED. User can enable it by toggling web_search to true.
                 {"index": 0, "message": {"role": "assistant", "content": content}}
             ],
             "_provider_used": result["provider"],
+            "_gemini_model": result.get("model"),
             "usage": {"prompt_tokens_est": tokens_in, "completion_tokens_est": tokens_out},
         }
+        if result.get("images"):
+            payload["_search_images"] = result["images"]
         if result.get("web_search_degraded"):
             payload["_web_search_degraded"] = True
         return payload, 200, count
 
-    def sse_response(stream_data, provider):
-        """Create a proper SSE response."""
+    def sse_response(stream_data, provider, model=None, images=None):
+        """Create a proper SSE response. Search images ride along as an SSE
+        comment-style event the playground can pick up if it wants."""
+        headers = {
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "X-Provider-Used": provider,
+        }
+        if model:
+            headers["X-Gemini-Model"] = model
+
+        def generate():
+            if images:
+                yield f"event: search-images\ndata: {json.dumps({'images': images})}\n\n"
+            for chunk in sse_stream_generator(stream_data):
+                yield chunk
+
         return Response(
-            stream_with_context(sse_stream_generator(stream_data)),
+            stream_with_context(generate()),
             mimetype="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-                "X-Provider-Used": provider,
-            }
+            headers=headers,
         )
 
     @app.post("/v1/chat/completions")
@@ -1726,7 +1802,8 @@ Search is currently DISABLED. User can enable it by toggling web_search to true.
         if status != 200:
             return jsonify(payload), status
         if payload.get("streaming"):
-            return sse_response(payload["stream"], payload["provider"])
+            return sse_response(payload["stream"], payload["provider"],
+                                model=payload.get("model"), images=payload.get("images"))
         return jsonify(payload)
 
     @app.post("/console/playground/chat")
@@ -1747,7 +1824,8 @@ Search is currently DISABLED. User can enable it by toggling web_search to true.
         if status != 200:
             return jsonify(payload), status
         if payload.get("streaming"):
-            return sse_response(payload["stream"], payload["provider"])
+            return sse_response(payload["stream"], payload["provider"],
+                                model=payload.get("model"), images=payload.get("images"))
         return jsonify(payload)
 
     return app
