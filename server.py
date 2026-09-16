@@ -31,6 +31,7 @@ import json
 import secrets
 import re
 import logging
+import time as _time
 import datetime as dt
 from datetime import timezone
 from contextlib import contextmanager
@@ -471,6 +472,36 @@ OPENAI_STYLE = {
 
 PASSTHROUGH_PARAMS = ("temperature", "top_p", "top_k", "max_tokens", "stop", "seed",
                       "presence_penalty", "frequency_penalty", "response_format")
+
+
+class Tracer:
+    """Collects a step-by-step debug trace for a single request: routing
+    decisions, provider/tool calls, and errors. Cheap no-op-ish object —
+    always create one per request and pass it down; attach .events to the
+    response so the playground can render exactly what happened."""
+
+    def __init__(self):
+        self._t0 = _time.time()
+        self.events = []
+
+    def add(self, stage: str, message: str, **data):
+        entry = {
+            "t_ms": int((_time.time() - self._t0) * 1000),
+            "stage": stage,
+            "message": message,
+        }
+        if data:
+            # keep it JSON-safe and small
+            safe = {}
+            for k, v in data.items():
+                try:
+                    json.dumps(v)
+                    safe[k] = v
+                except TypeError:
+                    safe[k] = str(v)
+            entry["data"] = safe
+        self.events.append(entry)
+        return entry
 
 
 class ProviderError(Exception):
@@ -939,7 +970,25 @@ def _call_gemini(messages: list, timeout: int, stream: bool = False, model: str 
                 }
 
             data = resp.json()
-            text = data["candidates"][0]["content"]["parts"][0]["text"]
+
+            candidates = data.get("candidates") or []
+            if not candidates:
+                block_reason = (data.get("promptFeedback") or {}).get("blockReason")
+                last_error = f"gemini: no candidates returned (blockReason={block_reason})"
+                mark_key_down("gemini", key, last_error, cooldown_seconds=5)
+                logger.error(last_error)
+                continue
+
+            candidate = candidates[0]
+            parts = ((candidate.get("content") or {}).get("parts")) or []
+            text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
+
+            if not text:
+                finish_reason = candidate.get("finishReason")
+                last_error = f"gemini: empty response (finishReason={finish_reason})"
+                mark_key_down("gemini", key, last_error, cooldown_seconds=5)
+                logger.error(last_error)
+                continue
 
             usage = data.get("usageMetadata", {})
             logger.info(f"gemini({model}): success, key {_hash_key(key)}, latency {latency:.0f}ms, tokens {usage.get('promptTokenCount', '?')}/{usage.get('candidatesTokenCount', '?')}")
@@ -1256,7 +1305,7 @@ def _inject_tavily_results(messages: list, query: str, max_results: int = 5) -> 
         return messages, []
 
 
-def run_agentic_completion(messages: list, client_body: dict = None, web_search_enabled: bool = True, stream: bool = False):
+def run_agentic_completion(messages: list, client_body: dict = None, web_search_enabled: bool = True, stream: bool = False, tracer: "Tracer" = None):
     """Model -> [SEARCH: ...] / [FETCH: ...] tags -> real results injected ->
     model again, until no tags appear or MAX_TOOL_ITERATIONS is hit.
 
@@ -1271,18 +1320,33 @@ def run_agentic_completion(messages: list, client_body: dict = None, web_search_
     degraded = False
     collected_images = []
     default_max_results = int(((client_body or {}).get("web_search") or {}).get("max_results") or 5)
+    tr = tracer or Tracer()
+
+    tr.add("routing", "agentic loop starting", web_search_enabled=web_search_enabled,
+           stream=stream, max_iterations=MAX_TOOL_ITERATIONS)
 
     for iteration in range(MAX_TOOL_ITERATIONS):
         is_final = (iteration == MAX_TOOL_ITERATIONS - 1)
         should_stream = stream and is_final and not degraded
 
+        tr.add("model_call", f"iteration {iteration}: calling model", iteration=iteration,
+               should_stream=should_stream, message_count=len(working))
+        t_call = _time.time()
         try:
             result = call_model(working, client_body=client_body, tools=None, stream=should_stream)
+            tr.add("model_call_ok", f"iteration {iteration}: model responded",
+                   iteration=iteration, provider=result.get("provider"), model=result.get("model"),
+                   latency_ms=int((_time.time() - t_call) * 1000))
         except ProviderError as e:
+            tr.add("model_call_error", f"iteration {iteration}: provider call failed: {e}",
+                   iteration=iteration, error=str(e),
+                   latency_ms=int((_time.time() - t_call) * 1000))
             if not web_search_enabled or degraded:
+                tr.add("error", "no fallback available, raising", iteration=iteration)
                 raise
             logger.warning(f"Model call failed ({e}); falling back to Tavily pre-search")
             degraded = True
+            tr.add("fallback", "falling back to Tavily pre-search (degraded mode)", iteration=iteration)
 
             last_user = ""
             for m in reversed(working):
@@ -1292,31 +1356,53 @@ def run_agentic_completion(messages: list, client_body: dict = None, web_search_
                     break
 
             if last_user:
-                working, imgs = _inject_tavily_results(working, last_user)
-                collected_images.extend(imgs)
+                try:
+                    working, imgs = _inject_tavily_results(working, last_user)
+                    collected_images.extend(imgs)
+                    tr.add("tool_call_ok", "Tavily pre-search injected", image_count=len(imgs))
+                except Exception as e2:
+                    tr.add("tool_call_error", f"Tavily pre-search failed: {e2}")
 
-            result = call_model(working, client_body=client_body, tools=None, stream=False)
+            t_call2 = _time.time()
+            try:
+                result = call_model(working, client_body=client_body, tools=None, stream=False)
+                tr.add("model_call_ok", "degraded-mode model call succeeded",
+                       provider=result.get("provider"), model=result.get("model"),
+                       latency_ms=int((_time.time() - t_call2) * 1000))
+            except ProviderError as e2:
+                tr.add("model_call_error", f"degraded-mode model call also failed: {e2}",
+                       error=str(e2), latency_ms=int((_time.time() - t_call2) * 1000))
+                raise
 
         if should_stream and "stream" in result and not degraded:
+            tr.add("routing", "handing off to client as a live stream", provider=result["provider"],
+                   model=result.get("model"))
             return {
                 "stream": result["stream"],
                 "provider": result["provider"],
                 "model": result.get("model"),
                 "streaming": True,
                 "images": collected_images,
+                "trace": tr.events,
             }
 
         content = result.get("content") or ""
         search_tags = _extract_search_tags(content) if web_search_enabled else []
         fetch_tags = _extract_fetch_tags(content) if web_search_enabled else []
+        if search_tags or fetch_tags:
+            tr.add("tool_detect", f"model requested {len(search_tags)} search(es), {len(fetch_tags)} fetch(es)",
+                   iteration=iteration, search_count=len(search_tags), fetch_count=len(fetch_tags))
 
         if not search_tags and not fetch_tags:
+            tr.add("routing", "no tool tags in reply, returning final answer", iteration=iteration,
+                   degraded=degraded, content_chars=len(content))
             out = {
                 "content": content,
                 "provider": result["provider"],
                 "model": result.get("model"),
                 "streaming": False,
                 "images": collected_images,
+                "trace": tr.events,
             }
             if degraded:
                 out["web_search_degraded"] = True
@@ -1328,16 +1414,24 @@ def run_agentic_completion(messages: list, client_body: dict = None, web_search_
         for raw_tag in search_tags:
             query, opts = _parse_search_tag(raw_tag)
             if not query:
+                tr.add("tool_call_error", "search tag had no query, skipped", raw_tag=raw_tag)
                 continue
             n = int(opts.get("n", default_max_results) or default_max_results)
             depth = opts.get("depth", "basic")
             include_images = opts.get("images", "yes").lower() not in ("no", "false", "0")
+            t_tool = _time.time()
             try:
                 search_data = web_search(query, max_results=n, search_depth=depth, include_images=include_images)
                 collected_images.extend(search_data.get("images", []))
                 tool_output = _format_search_context(query, search_data)
+                tr.add("tool_call_ok", f'[SEARCH: {query}] succeeded', query=query, n=n, depth=depth,
+                       result_count=len(search_data.get("results", []) or []),
+                       image_count=len(search_data.get("images", []) or []),
+                       latency_ms=int((_time.time() - t_tool) * 1000))
             except Exception as e:
                 tool_output = f'Search for "{query}" failed: {e}'
+                tr.add("tool_call_error", f'[SEARCH: {query}] failed: {e}', query=query,
+                       latency_ms=int((_time.time() - t_tool) * 1000))
             working.append({
                 "role": "system",
                 "content": (
@@ -1349,11 +1443,16 @@ def run_agentic_completion(messages: list, client_body: dict = None, web_search_
             })
 
         for url in fetch_tags:
+            t_tool = _time.time()
             try:
                 title, text = fetch_page_text(url)
                 tool_output = f'Fetched page: {title}\nURL: {url}\n\n{text}'
+                tr.add("tool_call_ok", f'[FETCH: {url}] succeeded', url=url, title=title,
+                       chars=len(text), latency_ms=int((_time.time() - t_tool) * 1000))
             except Exception as e:
                 tool_output = f'Failed to fetch {url}: {e}'
+                tr.add("tool_call_error", f'[FETCH: {url}] failed: {e}', url=url,
+                       latency_ms=int((_time.time() - t_tool) * 1000))
             working.append({
                 "role": "system",
                 "content": (
@@ -1362,11 +1461,13 @@ def run_agentic_completion(messages: list, client_body: dict = None, web_search_
                 ),
             })
 
+    tr.add("error", "hit MAX_TOOL_ITERATIONS without a final answer", max_iterations=MAX_TOOL_ITERATIONS)
     out = {
         "content": "I wasn't able to finish that within the search-iteration limit.",
         "provider": None,
         "streaming": False,
         "images": collected_images,
+        "trace": tr.events,
     }
     if degraded:
         out["web_search_degraded"] = True
@@ -1385,6 +1486,12 @@ def build_system_prompt(body: dict, is_json_retry: bool = False) -> str:
     json_enabled = bool(response_format)
 
     lines = ["You are Sentry 1, an AI assistant accessed via the Fluid Intelligence API."]
+    lines.append(
+        "Current date and time (UTC): %s. This is live, authoritative data from the "
+        "server clock — trust it completely over anything you recall from training, "
+        "and use it whenever asked about today's date, the current time, or how long "
+        "ago/until something is." % utcnow().strftime("%A, %B %d, %Y, %H:%M UTC")
+    )
 
     # ---- live web search (Tavily), model-controlled via tags ----
     if web_enabled:
@@ -1407,6 +1514,7 @@ def build_system_prompt(body: dict, is_json_retry: bool = False) -> str:
         lines.append("LIVE WEB SEARCH (Tavily) — currently DISABLED by the user.")
         lines.append("- If asked about current events, news, prices, weather, or recent data, say search is available but turned off and suggest enabling it.")
         lines.append("- Do not pretend to search. Answer general knowledge directly.")
+        lines.append("- Never output anything shaped like [SEARCH: ...], [FETCH: ...], or a field describing a search you're about to run — not as plain text, and not as a JSON string value. Those tags only function when search is enabled; while it's off they are just meaningless text and must not appear anywhere in your reply.")
 
     # ---- JSON mode, same pattern: enabled via system prompt + enforced server-side ----
     if json_enabled and not is_json_retry:
@@ -1693,28 +1801,41 @@ def create_app():
 
     def completion_core(body: dict, api_key_id: int):
         """Returns (response_dict_or_flask_response_parts, status, count)."""
+        tr = Tracer()
         messages = body.get("messages") or []
         if not messages:
-            return {"error": {"message": "messages required"}}, 400, None
+            tr.add("error", "no messages in request body")
+            return {"error": {"message": "messages required"}, "_debug_trace": tr.events}, 400, None
+
+        tr.add("request", "request received", message_count=len(messages),
+               web_search=bool((body.get("web_search") or {}).get("enabled")),
+               json_mode=bool(body.get("response_format")), stream=bool(body.get("stream")),
+               effort=(body.get("reasoning") or {}).get("effort"))
 
         is_json_retry = bool(body.get("_json_retry"))
         system_content = build_system_prompt(body, is_json_retry=is_json_retry)
         messages.insert(0, {"role": "system", "content": system_content})
+        tr.add("routing", "system prompt built", is_json_retry=is_json_retry, chars=len(system_content))
 
         try:
             messages = _transcribe_audio_blocks(messages)
         except Exception as e:
             logger.error(f"audio preprocessing failed: {e}")
-            return {"error": {"message": f"Failed to process audio: {e}"}}, 502, None
+            tr.add("error", f"audio preprocessing failed: {e}")
+            return {"error": {"message": f"Failed to process audio: {e}"}, "_debug_trace": tr.events}, 502, None
 
         tokens_in = estimate_tokens(messages)
+        tr.add("routing", f"estimated {tokens_in} input tokens", tokens_in=tokens_in, limit=MAX_INPUT_TOKENS)
         if tokens_in > MAX_INPUT_TOKENS:
-            return {"error": {"message": f"request exceeds the {MAX_INPUT_TOKENS}-token limit"}}, 413, None
+            tr.add("error", "input exceeds token limit", tokens_in=tokens_in, limit=MAX_INPUT_TOKENS)
+            return {"error": {"message": f"request exceeds the {MAX_INPUT_TOKENS}-token limit"}, "_debug_trace": tr.events}, 413, None
 
         count = check_and_increment_rate_limit(api_key_id, tokens_in=tokens_in)
         set_rate_limit_headers(count)
+        tr.add("routing", f"rate limit check: {count}/{DAILY_REQUEST_CAP} requests today", count=count, cap=DAILY_REQUEST_CAP)
         if count > DAILY_REQUEST_CAP:
-            resp = jsonify(error={"message": "daily request cap exceeded"})
+            tr.add("error", "daily request cap exceeded")
+            resp = jsonify(error={"message": "daily request cap exceeded"}, _debug_trace=tr.events)
             resp.status_code = 429
             resp.headers["Retry-After"] = str(seconds_until_midnight_utc())
             return None, 429, count
@@ -1727,11 +1848,13 @@ def create_app():
                 messages,
                 client_body=body,
                 web_search_enabled=web_search_enabled,
-                stream=stream
+                stream=stream,
+                tracer=tr,
             )
         except ProviderError as e:
             logger.error(f"Provider error: {e}")
-            return {"error": {"message": str(e)}}, 502, count
+            tr.add("error", f"provider error: {e}")
+            return {"error": {"message": str(e)}, "_debug_trace": tr.events}, 502, count
 
         # Handle streaming response
         if result.get("streaming") and "stream" in result:
@@ -1741,19 +1864,25 @@ def create_app():
                 "provider": result["provider"],
                 "model": result.get("model"),
                 "images": result.get("images", []),
+                "trace": result.get("trace", tr.events),
             }, 200, count
 
         # Validate JSON if response_format requested
         response_format = body.get("response_format")
         content = result["content"]
         if response_format:
+            tr.add("routing", "validating JSON mode output")
             try:
                 content = validate_and_fix_json(content, response_format, messages, body, api_key_id)
+                tr.add("routing", "JSON validation passed")
             except ProviderError as e:
-                return {"error": {"message": str(e)}}, 502, count
+                tr.add("error", f"JSON validation failed: {e}")
+                return {"error": {"message": str(e)}, "_debug_trace": tr.events}, 502, count
 
         tokens_out = estimate_tokens([{"content": content}])
         record_tokens_out(api_key_id, tokens_out)
+        tr.add("routing", "request complete", tokens_out=tokens_out, provider=result.get("provider"),
+               model=result.get("model"))
 
         payload = {
             "id": "chatcmpl-sentry1",
@@ -1765,6 +1894,7 @@ def create_app():
             "_provider_used": result["provider"],
             "_gemini_model": result.get("model"),
             "usage": {"prompt_tokens_est": tokens_in, "completion_tokens_est": tokens_out},
+            "_debug_trace": result.get("trace", tr.events),
         }
         if result.get("images"):
             payload["_search_images"] = result["images"]
@@ -1772,9 +1902,9 @@ def create_app():
             payload["_web_search_degraded"] = True
         return payload, 200, count
 
-    def sse_response(stream_data, provider, model=None, images=None):
-        """Create a proper SSE response. Search images ride along as an SSE
-        comment-style event the playground can pick up if it wants."""
+    def sse_response(stream_data, provider, model=None, images=None, trace=None):
+        """Create a proper SSE response. Search images and the debug trace
+        ride along as SSE comment-style events the playground can pick up."""
         headers = {
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
@@ -1784,6 +1914,8 @@ def create_app():
             headers["X-Gemini-Model"] = model
 
         def generate():
+            if trace:
+                yield f"event: debug\ndata: {json.dumps({'trace': trace})}\n\n"
             if images:
                 yield f"event: search-images\ndata: {json.dumps({'images': images})}\n\n"
             for chunk in sse_stream_generator(stream_data):
@@ -1809,7 +1941,8 @@ def create_app():
             return jsonify(payload), status
         if payload.get("streaming"):
             return sse_response(payload["stream"], payload["provider"],
-                                model=payload.get("model"), images=payload.get("images"))
+                                model=payload.get("model"), images=payload.get("images"),
+                                trace=payload.get("trace"))
         return jsonify(payload)
 
     @app.post("/console/playground/chat")
@@ -1831,7 +1964,8 @@ def create_app():
             return jsonify(payload), status
         if payload.get("streaming"):
             return sse_response(payload["stream"], payload["provider"],
-                                model=payload.get("model"), images=payload.get("images"))
+                                model=payload.get("model"), images=payload.get("images"),
+                                trace=payload.get("trace"))
         return jsonify(payload)
 
     return app
