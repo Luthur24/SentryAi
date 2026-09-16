@@ -14,21 +14,124 @@
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.5/purify.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <script>
   // Render model output as sanitized markdown instead of raw text, so
   // **bold**, lists, code blocks, links etc. actually display instead of
   // showing literal asterisks/backticks.
   function pgRenderMarkdown(text) {
     try {
-      const rawHtml = marked.parse(text || '', { breaks: true });
-      return DOMPurify.sanitize(rawHtml);
+      const rawHtml = marked.parse(text || '', { breaks: true, gfm: true });
+      const clean = DOMPurify.sanitize(rawHtml, { ADD_ATTR: ['target', 'rel'] });
+      const div = document.createElement('div');
+      div.className = 'md';
+      div.innerHTML = clean;
+      div.querySelectorAll('pre code').forEach((block) => {
+        try { hljs.highlightElement(block); } catch (e) {}
+        const pre = block.parentElement;
+        if (!pre) return;
+        pre.style.position = 'relative';
+        if (!pre.querySelector('.md-copy')) {
+          const btn = document.createElement('button');
+          btn.className = 'md-copy';
+          btn.type = 'button';
+          btn.textContent = 'copy';
+          btn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            navigator.clipboard.writeText(block.textContent).then(() => {
+              btn.textContent = 'copied';
+              setTimeout(() => { btn.textContent = 'copy'; }, 1200);
+            });
+          });
+          pre.appendChild(btn);
+        }
+        const langMatch = (block.className.match(/language-([a-z0-9#+-]+)/i) || [])[1] || '';
+        if (/^(js|javascript)$/i.test(langMatch) && !pre.querySelector('.md-run')) {
+          const run = document.createElement('button');
+          run.className = 'md-run';
+          run.type = 'button';
+          run.textContent = 'run';
+          run.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            pgRunJs(block.textContent, pre);
+          });
+          pre.appendChild(run);
+        }
+      });
+      return div.innerHTML;
     } catch (e) {
       console.error('markdown render failed:', e);
-      // Fall back to escaped plain text so a render error never means a blank bubble
       const div = document.createElement('div');
       div.textContent = text || '';
       return div.innerHTML;
     }
+  }
+
+  // Execute a ```js block from the model in a sandboxed iframe (no network,
+  // no storage access) and show console output under the code block.
+  function pgRunJs(code, pre) {
+    let out = pre.parentElement.querySelector('.md-exec-out');
+    if (!out) {
+      out = document.createElement('div');
+      out.className = 'md-exec-out';
+      pre.parentElement.insertBefore(out, pre.nextSibling);
+    }
+    out.textContent = 'running…';
+    const id = 'pg-exec-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+    const iframe = document.createElement('iframe');
+    iframe.setAttribute('sandbox', 'allow-scripts');
+    iframe.style.display = 'none';
+    const handler = (e) => {
+      if (!e.data || e.data.id !== id) return;
+      window.removeEventListener('message', handler);
+      iframe.remove();
+      const lines = (e.data.logs || []).map((l) => {
+        if (typeof l === 'object' && l !== null) { try { return JSON.stringify(l); } catch (_) { return String(l); } }
+        return String(l);
+      });
+      out.textContent = lines.length ? lines.join('\n') : '(no output)';
+    };
+    window.addEventListener('message', handler);
+    const safeCode = code.replace(/<\/script>/gi, '<\\/script>');
+    iframe.srcdoc = '<script>window.__id=' + JSON.stringify(id) + ';' +
+      'const __logs=[];' +
+      "['log','error','warn','info'].forEach(k=>{const o=console[k].bind(console);console[k]=(...a)=>{__logs.push(a.length===1?a[0]:a);o(...a);};});" +
+      'try{' + safeCode + '\n}catch(e){__logs.push("Error: "+(e&&e.message?e.message:e));}' +
+      'parent.postMessage({id:window.__id,logs:__logs},"*");' +
+      '<\/script>';
+    document.body.appendChild(iframe);
+  }
+
+  function pgEsc(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  // User bubble that ALSO shows what was attached (image/video/file chips).
+  function pgAppendUserMessage(text, attachments) {
+    const chat = document.getElementById('pg-chat');
+    const row = document.createElement('div');
+    row.className = 'pg-row pg-row-user';
+    const avatar = document.createElement('div');
+    avatar.className = 'pg-avatar pg-avatar-user';
+    avatar.textContent = 'U';
+    const bubble = document.createElement('div');
+    bubble.className = 'pg-bubble pg-bubble-user';
+    let h = text ? '<div>' + pgEsc(text).replace(/\n/g, '<br>') + '</div>' : '';
+    (attachments || []).forEach((a) => {
+      if (a.kind === 'image' && a.preview) {
+        h += '<img src="' + a.preview + '" class="pg-bubble-attach-img" alt="attachment">';
+      } else if (a.kind === 'video' && a.preview) {
+        h += '<video src="' + a.preview + '" class="pg-bubble-attach-video" controls></video>';
+      } else {
+        h += '<span class="pg-bubble-attach-file">' + (PG_KIND_ICON[a.kind] || '') + ' ' + pgEsc(a.name) + '</span>';
+      }
+    });
+    bubble.innerHTML = h;
+    row.appendChild(avatar);
+    row.appendChild(bubble);
+    chat.appendChild(row);
+    chat.scrollTop = chat.scrollHeight;
+    return bubble;
   }
 </script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -603,6 +706,36 @@
 
   .pg-hint{text-align:center;font-size:11px;color:var(--slate);font-family:var(--mono);margin-top:8px;}
 
+
+  /* ---------- MARKDOWN RENDERING (full feature set, safely sandboxed) ---------- */
+  .md{line-height:1.65;font-size:14.5px}
+  .md > :first-child{margin-top:0}
+  .md > :last-child{margin-bottom:0}
+  .md img{max-width:100%;max-height:420px;height:auto;border-radius:8px;display:block;margin:10px 0;border:1px solid var(--line)}
+  .md pre{position:relative;background:#0d1117;border:1px solid var(--line);border-radius:8px;padding:12px 14px;overflow-x:auto;margin:10px 0}
+  .md pre code{background:transparent;padding:0;font-family:var(--mono);font-size:12.8px;line-height:1.6;color:#c9d1d9;white-space:pre}
+  .md :not(pre) > code{background:rgba(127,127,127,.14);padding:2px 6px;border-radius:4px;font-family:var(--mono);font-size:12.5px;color:var(--ink)}
+  .md-copy,.md-run{position:absolute;top:6px;font-family:var(--mono);font-size:10.5px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:5px;padding:3px 9px;cursor:pointer;line-height:1.4}
+  .md-copy{right:6px}
+  .md-run{right:52px;color:#3fb950}
+  .md-copy:hover,.md-run:hover{border-color:#8b949e}
+  .md-exec-out{background:#0d1117;border:1px solid var(--line);border-top:none;border-radius:0 0 8px 8px;font-family:var(--mono);font-size:12px;color:#3fb950;padding:10px 12px;white-space:pre-wrap;word-break:break-word;max-height:240px;overflow-y:auto;margin:-10px 0 10px}
+  .md table{border-collapse:collapse;margin:10px 0;display:block;max-width:100%;overflow-x:auto}
+  .md th,.md td{border:1px solid var(--line);padding:6px 10px;font-size:13px;text-align:left}
+  .md th{background:var(--bg-raised)}
+  .md blockquote{border-left:3px solid var(--amber-dim);margin:10px 0;padding:2px 14px;color:var(--ink-dim)}
+  .md a{color:#8ab4f8;text-decoration:underline}
+  .md ul,.md ol{padding-left:22px;margin:8px 0}
+  .md li{margin:3px 0}
+  .md h1,.md h2,.md h3,.md h4{margin:14px 0 8px;line-height:1.3}
+  .md hr{border:none;border-top:1px solid var(--line);margin:14px 0}
+  .pg-bubble-attach-img{max-width:220px;max-height:160px;object-fit:cover;border-radius:8px;margin-top:8px;display:block}
+  .pg-bubble-attach-video{max-width:260px;border-radius:8px;margin-top:8px;display:block}
+  .pg-bubble-attach-file{display:inline-flex;align-items:center;gap:6px;margin-top:8px;font-family:var(--mono);font-size:12px;background:rgba(0,0,0,.18);border-radius:6px;padding:4px 9px}
+  .pg-effort-badge{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11.5px;color:var(--slate);margin-right:8px}
+  .pg-effort-badge.effort-low{color:var(--good)}
+  .pg-effort-badge.effort-medium{color:#d29922}
+  .pg-effort-badge.effort-high{color:var(--bad)}
 
   /* New preview styles */
   .pg-preview-thumb {
@@ -1281,6 +1414,10 @@ response = requests.post(
                   <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 9h6v6H9z"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg>
                   Debug
                 </button>
+                <span class="pg-effort-badge effort-medium" id="pg-effort-badge" title="Reasoning effort — how long the model thinks before answering. High uses the largest model and automatically falls back to medium on the free tier.">
+                  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2a7 7 0 0 0-7 7c0 2.4 1.2 4.5 3 5.7V17a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-2.3c1.8-1.2 3-3.3 3-5.7a7 7 0 0 0-7-7z"/><path d="M9 22h6"/></svg>
+                  <span id="pg-effort-label">Reasoning: Medium</span>
+                </span>
                 <div class="pg-segmented" id="pg-effort-group">
                   <button class="pg-seg-btn" data-val="low" onclick="pgSetEffort('low')">Low</button>
                   <button class="pg-seg-btn active" data-val="medium" onclick="pgSetEffort('medium')">Medium</button>
@@ -2137,6 +2274,14 @@ response = requests.post(
   function pgSetEffort(val){
     pgEffort = val;
     document.querySelectorAll('#pg-effort-group .pg-seg-btn').forEach(b => b.classList.toggle('active', b.dataset.val === val));
+    const badge = document.getElementById('pg-effort-badge');
+    const label = document.getElementById('pg-effort-label');
+    if (badge) {
+      badge.className = 'pg-effort-badge effort-' + val;
+      badge.title = 'Reasoning effort: ' + val.charAt(0).toUpperCase() + val.slice(1) +
+        (val === 'high' ? ' — largest model; falls back to medium on the free tier.' : ' — how long the model thinks before answering.');
+    }
+    if (label) label.textContent = 'Reasoning: ' + val.charAt(0).toUpperCase() + val.slice(1);
   }
 
   // Fixed attachment menu with proper event handling
@@ -2579,18 +2724,19 @@ response = requests.post(
     // Add to history
     pgMessages.push({role: 'user', content: messageContent});
 
-    // Display user message
-    const displayText = text || `[${pgAttachments.map(a => a.kind).join(', ')}]`;
-    pgAppendMessage('user', displayText);
+    // Snapshot attachments and clear the composer tray
+    const attachedNow = pgAttachments.slice();
+    pgAttachments = [];
+    pgRenderAttachments();
+
+    // Display user message — including what was attached
+    pgAppendUserMessage(text, attachedNow);
     input.value = '';
     pgAutoGrow(input);
 
     const searchOn = document.getElementById('pg-search-chip').classList.contains('on');
     const jsonOn = document.getElementById('pg-json-chip').classList.contains('on');
     const debugOn = document.getElementById('pg-debug-chip').classList.contains('on');
-    const attachedNow = pgAttachments.slice();
-    pgAttachments = [];
-    pgRenderAttachments();
 
     const sendBtn = document.getElementById('pg-send-btn');
     sendBtn.disabled = true;
@@ -2646,6 +2792,14 @@ response = requests.post(
             if (eventName === 'debug') streamTrace = data.trace;
           });
 
+          // Re-render the finished stream as full markdown (highlighted code,
+          // images, tables, run buttons) instead of raw text with asterisks.
+          bubble.innerHTML = pgRenderMarkdown(fullText);
+          {
+            const chatEl = document.getElementById('pg-chat');
+            chatEl.scrollTop = chatEl.scrollHeight;
+          }
+
           if (debugOn) {
             const panel = pgRenderDebugTrace(streamTrace);
             if (panel) bubble.appendChild(panel);
@@ -2661,6 +2815,9 @@ response = requests.post(
           if (debugOn) {
             const panel = pgRenderDebugTrace(data._debug_trace);
             if (panel) bubble.appendChild(panel);
+          }
+          if (data._reasoning_downgraded) {
+            pgAppendMessage('assistant', 'ℹ️ The high-effort model is not available on the free tier — this answer used the medium model instead.');
           }
           if (data._web_search_degraded) {
             pgAppendMessage('assistant', '⚠️ Live web search was unavailable for this request (all search-capable providers failed) — answered without it.');
