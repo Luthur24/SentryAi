@@ -1576,6 +1576,13 @@ def create_app():
         if not messages:
             return {"error": {"message": "messages required"}}, 400, None
 
+        # Inject identity + search behavior system message (only once, here)
+        web_search_enabled = bool((body.get("web_search") or {}).get("enabled"))
+        system_content = "You are Sentry 1, an AI assistant accessed via the Fluid Intelligence API."
+        if web_search_enabled:
+            system_content += " You have web search enabled. For ANY question about current events, recent data, prices, news, weather, or anything that might have changed after your training cutoff, you MUST call web_search first. Do not answer from memory when search is available. Do not claim you cannot access the internet."
+        messages.insert(0, {"role": "system", "content": system_content})
+
         try:
             messages = _transcribe_audio_blocks(messages)
         except Exception as e:
@@ -1594,7 +1601,6 @@ def create_app():
             resp.headers["Retry-After"] = str(seconds_until_midnight_utc())
             return None, 429, count
 
-        web_search_enabled = bool((body.get("web_search") or {}).get("enabled"))
         stream = bool(body.get("stream"))
 
         try:
