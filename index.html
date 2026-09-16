@@ -535,6 +535,28 @@
   .pg-chip{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12.5px;color:var(--slate);background:transparent;border:1px solid var(--line);padding:6px 11px;border-radius:99px;cursor:pointer;transition:all .15s ease;}
   .pg-chip:hover{border-color:var(--slate);color:var(--ink);}
   .pg-chip.on{background:var(--amber);border-color:var(--amber);color:var(--on-amber);font-weight:600;}
+  .pg-debug-panel{font-family:var(--mono);font-size:11.5px;background:#0d1117;color:#c9d1d9;border:1px solid var(--line);border-radius:8px;margin-top:8px;max-width:640px;overflow:hidden;}
+  .pg-debug-panel summary{cursor:pointer;padding:8px 12px;color:#8b949e;user-select:none;list-style:none;display:flex;align-items:center;gap:6px;}
+  .pg-debug-panel summary::-webkit-details-marker{display:none;}
+  .pg-debug-panel summary:before{content:'▸';font-size:10px;}
+  .pg-debug-panel[open] summary:before{content:'▾';}
+  .pg-debug-body{padding:0 12px 10px;max-height:340px;overflow-y:auto;}
+  .pg-debug-row{display:flex;gap:8px;padding:4px 0;border-top:1px solid rgba(255,255,255,.06);align-items:baseline;}
+  .pg-debug-row:first-child{border-top:none;}
+  .pg-debug-t{color:#6e7681;flex:0 0 52px;}
+  .pg-debug-stage{flex:0 0 100px;font-weight:600;}
+  .pg-debug-msg{flex:1;color:#c9d1d9;word-break:break-word;}
+  .pg-debug-data{color:#6e7681;margin-left:60px;margin-bottom:4px;white-space:pre-wrap;word-break:break-word;}
+  .pg-debug-stage.stage-error{color:#f85149;}
+  .pg-debug-stage.stage-model_call_error{color:#f85149;}
+  .pg-debug-stage.stage-tool_call_error{color:#f85149;}
+  .pg-debug-stage.stage-fallback{color:#d29922;}
+  .pg-debug-stage.stage-model_call_ok{color:#3fb950;}
+  .pg-debug-stage.stage-tool_call_ok{color:#3fb950;}
+  .pg-debug-stage.stage-routing{color:#58a6ff;}
+  .pg-debug-stage.stage-request{color:#58a6ff;}
+  .pg-debug-stage.stage-tool_detect{color:#d2a8ff;}
+  .pg-debug-stage.stage-model_call{color:#8b949e;}
 
   .pg-segmented{display:flex;border:1px solid var(--line);border-radius:99px;padding:2px;gap:2px;}
   .pg-seg-btn{font-family:var(--mono);font-size:12px;color:var(--slate);background:transparent;border:none;padding:5px 11px;border-radius:99px;cursor:pointer;}
@@ -1254,6 +1276,10 @@ response = requests.post(
                 <button class="pg-chip" id="pg-json-chip" onclick="pgToggleChip('pg-json-chip')" title="Structured JSON output">
                   <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 3H6a2 2 0 0 0-2 2v3a2 2 0 0 1-2 2 2 2 0 0 1 2 2v3a2 2 0 0 0 2 2h2"/><path d="M16 3h2a2 2 0 0 1 2 2v3a2 2 0 0 0 2 2 2 2 0 0 0-2 2v3a2 2 0 0 1-2 2h-2"/></svg>
                   JSON mode
+                </button>
+                <button class="pg-chip" id="pg-debug-chip" onclick="pgToggleChip('pg-debug-chip')" title="Show backend trace (routing, tool calls, errors) for every message">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 9h6v6H9z"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg>
+                  Debug
                 </button>
                 <div class="pg-segmented" id="pg-effort-group">
                   <button class="pg-seg-btn" data-val="low" onclick="pgSetEffort('low')">Low</button>
@@ -2399,12 +2425,15 @@ response = requests.post(
     }
   }
 
-  // Parse SSE stream and return full text
-  async function pgParseSSEStream(response, onChunk) {
+  // Parse SSE stream and return full text. Named events (event: debug,
+  // event: search-images) are routed to onEvent(eventName, data); plain
+  // `data:` lines with no preceding `event:` are treated as content chunks.
+  async function pgParseSSEStream(response, onChunk, onEvent) {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let fullText = '';
     let buffer = '';
+    let pendingEvent = null;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -2415,10 +2444,19 @@ response = requests.post(
       buffer = lines.pop() || ''; // Keep incomplete line in buffer
 
       for (const line of lines) {
+        if (line.startsWith('event: ')) {
+          pendingEvent = line.slice(7).trim();
+          continue;
+        }
         if (line.startsWith('data: ')) {
           const data = line.slice(6);
           if (data === '[DONE]') {
             return fullText;
+          }
+          if (pendingEvent) {
+            try { onEvent && onEvent(pendingEvent, JSON.parse(data)); } catch (e) { /* skip */ }
+            pendingEvent = null;
+            continue;
           }
           try {
             const chunk = JSON.parse(data);
@@ -2437,10 +2475,45 @@ response = requests.post(
           } catch (e) {
             // Skip invalid JSON
           }
+        } else if (line.trim() === '') {
+          pendingEvent = null; // blank line ends an SSE event block
         }
       }
     }
     return fullText;
+  }
+
+  // Renders a collapsed-by-default trace panel from backend `_debug_trace`
+  // events: routing decisions, provider/tool calls, and errors, in order.
+  function pgRenderDebugTrace(trace) {
+    if (!trace || !trace.length) return null;
+    const wrap = document.createElement('details');
+    wrap.className = 'pg-debug-panel';
+    const hasError = trace.some(ev => ev.stage === 'error' || ev.stage === 'model_call_error' || ev.stage === 'tool_call_error');
+    const summary = document.createElement('summary');
+    summary.textContent = `Debug trace — ${trace.length} step${trace.length === 1 ? '' : 's'}${hasError ? ' (error)' : ''}`;
+    wrap.appendChild(summary);
+    const body = document.createElement('div');
+    body.className = 'pg-debug-body';
+    for (const ev of trace) {
+      const row = document.createElement('div');
+      row.className = 'pg-debug-row';
+      row.innerHTML =
+        `<span class="pg-debug-t">+${ev.t_ms}ms</span>` +
+        `<span class="pg-debug-stage stage-${ev.stage}">${ev.stage}</span>` +
+        `<span class="pg-debug-msg"></span>`;
+      row.querySelector('.pg-debug-msg').textContent = ev.message || '';
+      body.appendChild(row);
+      if (ev.data && Object.keys(ev.data).length) {
+        const dataRow = document.createElement('div');
+        dataRow.className = 'pg-debug-data';
+        dataRow.textContent = JSON.stringify(ev.data);
+        body.appendChild(dataRow);
+      }
+    }
+    wrap.appendChild(body);
+    if (hasError) wrap.open = true;
+    return wrap;
   }
 
   async function pgSend(){
@@ -2514,6 +2587,7 @@ response = requests.post(
 
     const searchOn = document.getElementById('pg-search-chip').classList.contains('on');
     const jsonOn = document.getElementById('pg-json-chip').classList.contains('on');
+    const debugOn = document.getElementById('pg-debug-chip').classList.contains('on');
     const attachedNow = pgAttachments.slice();
     pgAttachments = [];
     pgRenderAttachments();
@@ -2549,13 +2623,18 @@ response = requests.post(
 
         if (!resp.ok) {
           const data = await resp.json().catch(() => ({}));
-          pgAppendMessage('assistant', 'Error (' + resp.status + '): ' + (data.error?.message || 'unknown error'));
+          const bubble = pgAppendMessage('assistant', 'Error (' + resp.status + '): ' + (data.error?.message || 'unknown error'));
+          if (debugOn) {
+            const panel = pgRenderDebugTrace(data._debug_trace);
+            if (panel) bubble.appendChild(panel);
+          }
           // Remove failed message from history
           pgMessages.pop();
         } else if (resp.headers.get('content-type')?.includes('text/event-stream')) {
           // Handle streaming response
           const bubble = pgAppendStreamingMessage('assistant');
           let fullText = '';
+          let streamTrace = null;
 
           await pgParseSSEStream(resp, (chunk) => {
             fullText += chunk;
@@ -2563,7 +2642,14 @@ response = requests.post(
             // Auto-scroll
             const chat = document.getElementById('pg-chat');
             chat.scrollTop = chat.scrollHeight;
+          }, (eventName, data) => {
+            if (eventName === 'debug') streamTrace = data.trace;
           });
+
+          if (debugOn) {
+            const panel = pgRenderDebugTrace(streamTrace);
+            if (panel) bubble.appendChild(panel);
+          }
 
           // Add to history
           pgMessages.push({role: 'assistant', content: fullText});
@@ -2571,7 +2657,11 @@ response = requests.post(
           // Non-streaming response
           const data = await resp.json();
           const content = data.choices?.[0]?.message?.content || '(no content)';
-          pgAppendMessage('assistant', content);
+          const bubble = pgAppendMessage('assistant', content);
+          if (debugOn) {
+            const panel = pgRenderDebugTrace(data._debug_trace);
+            if (panel) bubble.appendChild(panel);
+          }
           if (data._web_search_degraded) {
             pgAppendMessage('assistant', '⚠️ Live web search was unavailable for this request (all search-capable providers failed) — answered without it.');
           }
