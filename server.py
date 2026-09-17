@@ -17,7 +17,8 @@ What changed in this edit (everything the user asked for):
 5) No more reasoning tiers (fixed 2026-09-16) — sentry-1 no longer exposes
    low/medium/high. One fixed model per provider instead:
       gemini  -> gemini-3.7-flash
-      groq    -> meta-llama/llama-4-scout-17b-16e-instruct
+      groq    -> qwen/qwen3.6-27b   (was llama-4-scout, shut down 2026-07-17;
+                 qwen3.6 is multimodal, so Groq remains the image fallback)
       mistral -> ministral-8b-2512  (mistral-large-2512 isn't available on
                  this account's subscription tier — confirmed via a live
                  "model not available" error, so it's not used anywhere)
@@ -36,6 +37,22 @@ What changed in this edit (everything the user asked for):
 7) Playground controls wired through: client temperature / top_p / top_k /
    max_tokens are forwarded into Gemini's generationConfig (previously only
    the disconnected openai-style providers received them).
+8) Reliability fixes (2026-09-17) after image uploads started 502ing:
+   - Groq model swapped: meta-llama/llama-4-scout-17b-16e-instruct was
+     shut down on the free tier (2026-07-17). Default is now
+     qwen/qwen3.6-27b (multimodal: reasoning + vision, so it can serve
+     as the image-fallback when Gemini quota dies). GROQ_MODEL env var
+     can still point it at openai/gpt-oss-120b (text-only, production).
+   - Key cooldowns RE-ENABLED (they were no-op pass): a quota-dead key
+     is now skipped until its cooldown expires — quota errors cool down
+     until the UTC day rolls over, so a dead Gemini key no longer adds
+     seconds of failing retries to every request.
+   - Media fallback un-broken for streaming: it previously required
+     `not stream`, and the playground streams by default, so Mistral/Zai
+     were never tried on image requests. Now, when every media-capable
+     provider fails, the last resort strips image/video blocks into
+     "[image omitted]" text placeholders and answers text-only via
+     Mistral/Zai instead of 502ing.
 """
 
 import os
@@ -70,7 +87,7 @@ logger = logging.getLogger(__name__)
 # CONFIG
 # =========================================================================
 
-APP_VERSION = os.environ.get("APP_VERSION", "gemini-only-2026-09-16")
+APP_VERSION = os.environ.get("APP_VERSION", "four-provider-2026-09-17")
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
@@ -357,9 +374,24 @@ def _hash_key(key: str) -> str:
 
 
 def mark_key_down(provider: str, key: str, error, cooldown_seconds: int = 30):
-    """Cooldowns are disabled — no-op. Every request tries every configured
-    key fresh."""
-    pass
+    """RE-ENABLED 2026-09-17. Without cooldowns, a quota-dead key was retried
+    on every request: seconds of failing latency on each call, and a total
+    outage for image uploads whenever Gemini was the only eligible provider.
+    Quota errors cool down until the UTC day rolls over (free-tier daily
+    quota); everything else uses the caller's cooldown."""
+    err = str(error).lower()
+    if "quota" in err or "exceeded your current" in err:
+        cooldown_seconds = max(cooldown_seconds, seconds_until_midnight_utc())
+    key_hash = _hash_key(key)
+    with get_cursor(commit=True) as cur:
+        cur.execute(
+            """INSERT INTO key_status (provider, key_hash, unavailable_until, last_error)
+               VALUES (%s, %s, now() + %s, %s)
+               ON CONFLICT (provider, key_hash)
+               DO UPDATE SET unavailable_until = EXCLUDED.unavailable_until,
+                             last_error = EXCLUDED.last_error""",
+            (provider, key_hash, dt.timedelta(seconds=int(cooldown_seconds)), str(error)[:300]),
+        )
 
 
 def get_key_cooldown_info(provider: str, key: str):
@@ -376,7 +408,12 @@ def get_key_cooldown_info(provider: str, key: str):
 
 
 def is_key_available(provider: str, key: str) -> bool:
-    return True
+    until, _prev_err = get_key_cooldown_info(provider, key)
+    if not until:
+        return True
+    if until.tzinfo is None:
+        until = until.replace(tzinfo=timezone.utc)
+    return utcnow() >= until
 
 
 def mark_backend_down(name: str, error, cooldown_seconds: int = 30):
@@ -388,7 +425,7 @@ def is_backend_available(name: str) -> bool:
 
 
 # =========================================================================
-# MODEL PROVIDERS — Gemini active, others disconnected (not deleted)
+# MODEL PROVIDERS — all four active, flat fallback order (DEFAULT_ORDER)
 # =========================================================================
 
 PROVIDERS = {
@@ -446,9 +483,14 @@ if not GEMINI_KEYS:
 # --- Remaining three providers, activated (fixed 2026-09-16) ---------------
 # One fixed model each, picked from what's actually usable on these
 # accounts/keys, not just the provider's flagship:
-#   groq    -> meta-llama/llama-4-scout-17b-16e-instruct
-#              (free tier: 30 RPM, 1,000 RPD, 30K TPM — same RPD as
-#              openai/gpt-oss-120b but ~4x the TPM, so bigger prompts fit)
+#   groq    -> qwen/qwen3.6-27b
+#              (multimodal: reasoning + vision — per Groq's own deprecation
+#              page it's the recommended replacement for the shutdown
+#              llama-4-scout model, AND it keeps Groq usable as the
+#              image-fallback when Gemini quota dies, which gpt-oss-120b
+#              can't do since it's text-only. Preview tier, so worth
+#              re-checking; GROQ_MODEL=openai/gpt-oss-120b switches to the
+#              production text-only alternative)
 #   mistral -> ministral-8b-2512
 #              (mistral-large-2512 is NOT available on this account's
 #              subscription tier — confirmed via a live "model not
@@ -468,7 +510,7 @@ OPENAI_STYLE = {
             "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",
             "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",
         ],
-        "model": os.environ.get("GROQ_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"),
+        "model": os.environ.get("GROQ_MODEL", "qwen/qwen3.6-27b"),
         "extra_body": {},
         "supports_reasoning": True,
     },
@@ -655,9 +697,8 @@ def _error_detail(resp) -> str:
 
 
 def _call_openai_style(provider: str, messages: list, client_body: dict, tools, timeout: int, stream: bool = False):
-    """All four providers active as of 2026-09-16 — see DEFAULT_ORDER. Each
-    has exactly one fixed model now (OPENAI_STYLE[provider]["model"]); no
-    more reasoning-effort-based model swapping."""
+    """Groq / Mistral / Zai leg of the fallback chain — see DEFAULT_ORDER.
+    Each has exactly one fixed model (OPENAI_STYLE[provider]["model"])."""
     cfg = OPENAI_STYLE[provider]
     keys = [os.environ.get(e, d) for e, d in zip(cfg["api_key_envs"], cfg["api_key_defaults"])]
     keys = [k for k in keys if k]
@@ -766,6 +807,32 @@ def _fetch_media_as_base64(url: str, max_size_mb: int = 5) -> tuple:
         return b64, content_type
     except requests.RequestException as e:
         raise ProviderError(f"Failed to fetch media: {e}")
+
+
+def _strip_media_blocks(messages: list) -> list:
+    """Replace image/video/file blocks with a text placeholder so a text-only
+    provider (Mistral, Zai) can still answer the rest of the request instead
+    of the whole call 502ing. Audio is already transcribed to text earlier
+    in the pipeline, so only visual media reaches this point."""
+    out = []
+    for m in messages:
+        content = m.get("content")
+        if not isinstance(content, list):
+            out.append(m)
+            continue
+        blocks = []
+        for block in content:
+            btype = block.get("type") if isinstance(block, dict) else None
+            if btype in ("image_url", "video_url", "audio_url", "input_audio", "file_url"):
+                kind = btype.replace("_url", "").replace("input_audio", "audio")
+                blocks.append({
+                    "type": "text",
+                    "text": f"[{kind} was attached but omitted — this fallback provider cannot process media]",
+                })
+            else:
+                blocks.append(block)
+        out.append({**m, "content": blocks})
+    return out
 
 
 def _media_messages_to_data_urls(messages: list) -> list:
@@ -937,7 +1004,7 @@ def _extract_docx_text(content: bytes) -> str:
 
 
 def _call_gemini(messages: list, timeout: int, stream: bool = False, model: str = None, client_body: dict = None):
-    """The one active provider. Model is chosen per reasoning effort."""
+    """Gemini leg of the fallback chain (DEFAULT_ORDER[0])."""
     model = model or GEMINI_MODEL_DEFAULT
     keys = GEMINI_KEYS
     if not keys:
@@ -1139,17 +1206,23 @@ def call_model(messages: list, client_body: dict = None, tools=None, timeout: in
             continue
 
     if not GEMINI_ONLY:
-        if has_media(messages) and not stream:
+        if has_media(messages):
+            # Last resort when every media-capable provider (gemini, groq)
+            # failed — including while STREAMING, which was previously
+            # excluded here and silently broke this whole fallback for the
+            # playground (it streams by default). Text-only providers get
+            # the media stripped into "[image omitted]" placeholders so the
+            # user still gets an answer instead of a 502.
             for score, pos, name, msgs, use_tools in ranked:
-                if score < 2 or PROVIDERS[name]["media"]:
+                if PROVIDERS[name]["media"]:
                     continue
                 try:
-                    converted = _media_messages_to_data_urls(messages)
-                    logger.warning(f"native media provider(s) unavailable; trying {name} with data-URL conversion")
-                    return _call_openai_style(name, converted, client_body, use_tools, timeout, stream=stream)
+                    stripped = _strip_media_blocks(messages)
+                    logger.warning(f"all media-capable providers unavailable; answering via {name} with media stripped")
+                    return _call_openai_style(name, stripped, client_body, use_tools, timeout, stream=stream)
                 except (ProviderError, requests.RequestException) as e:
-                    errors.append(f"{name} (media fallback): {e}")
-                    logger.error(f"Provider {name} media fallback failed: {e}")
+                    errors.append(f"{name} (media-stripped fallback): {e}")
+                    logger.error(f"Provider {name} media-stripped fallback failed: {e}")
                     continue
 
         if tools:
