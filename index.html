@@ -119,7 +119,7 @@
   }
 
   // User bubble that ALSO shows what was attached (image/video/file chips).
-  function pgAppendUserMessage(text, attachments) {
+  function pgAppendUserMessage(text) {
     const chat = document.getElementById('pg-chat');
     const row = document.createElement('div');
     row.className = 'pg-row pg-row-user';
@@ -128,17 +128,7 @@
     avatar.textContent = 'U';
     const bubble = document.createElement('div');
     bubble.className = 'pg-bubble pg-bubble-user';
-    let h = text ? '<div>' + pgEsc(text).replace(/\n/g, '<br>') + '</div>' : '';
-    (attachments || []).forEach((a) => {
-      if (a.kind === 'image' && a.preview) {
-        h += '<img src="' + a.preview + '" class="pg-bubble-attach-img" alt="attachment">';
-      } else if (a.kind === 'video' && a.preview) {
-        h += '<video src="' + a.preview + '" class="pg-bubble-attach-video" controls></video>';
-      } else {
-        h += '<span class="pg-bubble-attach-file">' + (PG_KIND_ICON[a.kind] || '') + ' ' + pgEsc(a.name) + '</span>';
-      }
-    });
-    bubble.innerHTML = h;
+    bubble.innerHTML = text ? '<div>' + pgEsc(text).replace(/\n/g, '<br>') + '</div>' : '';
     row.appendChild(avatar);
     row.appendChild(bubble);
     chat.appendChild(row);
@@ -673,10 +663,6 @@
   .pg-debug-stage.stage-tool_detect{color:#d2a8ff;}
   .pg-debug-stage.stage-model_call{color:#8b949e;}
 
-  .pg-segmented{display:flex;border:1px solid var(--line);border-radius:99px;padding:2px;gap:2px;}
-  .pg-seg-btn{font-family:var(--mono);font-size:12px;color:var(--slate);background:transparent;border:none;padding:5px 11px;border-radius:99px;cursor:pointer;}
-  .pg-seg-btn.active{background:var(--ink);color:var(--bg);}
-
   .pg-chat{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:18px;padding:8px 4px 20px;}
   .pg-row{display:flex;gap:12px;align-items:flex-start;}
   .pg-row-user{flex-direction:row-reverse;}
@@ -694,21 +680,7 @@
   .pg-typing span:nth-child(3){animation-delay:.3s;}
   @keyframes pgBounce{0%,60%,100%{transform:translateY(0);opacity:.4;}30%{transform:translateY(-4px);opacity:1;}}
 
-  .pg-attachments{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px;}
-  .pg-attach-chip{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12px;color:var(--ink);background:var(--bg-raised);border:1px solid var(--line);padding:5px 10px;border-radius:8px;}
-  .pg-attach-chip button{background:none;border:none;color:var(--slate);cursor:pointer;font-size:13px;line-height:1;padding:0;}
-  .pg-attach-chip button:hover{color:var(--ink);}
-
   .pg-composer{display:flex;align-items:flex-end;gap:8px;border:1px solid var(--line);border-radius:20px;padding:8px 8px 8px 10px;background:var(--bg-raised);}
-  .pg-attach-wrap{position:relative;flex-shrink:0;}
-  .pg-attach-btn{width:36px;height:36px;border-radius:50%;border:1px solid var(--line);background:var(--bg);color:var(--ink);display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;}
-  .pg-attach-btn:hover{border-color:var(--amber);}
-  .pg-attach-menu{display:none;position:absolute;bottom:44px;left:0;background:var(--bg-raised);border:1px solid var(--line);border-radius:10px;padding:6px;min-width:170px;box-shadow:0 8px 24px rgba(0,0,0,.35);z-index:20;}
-  .pg-attach-menu.open{display:flex;flex-direction:column;}
-  .pg-attach-menu button{display:flex;align-items:center;gap:9px;background:none;border:none;color:var(--ink);font-family:var(--sans);font-size:13px;padding:8px 10px;border-radius:6px;cursor:pointer;text-align:left;}
-  .pg-attach-menu button:hover{background:var(--bg);}
-  .pg-attach-menu button.recording{color:#e0554f;}
-
   .pg-textarea{flex:1;resize:none;border:none;background:transparent;color:var(--ink);font-family:var(--sans);font-size:14.5px;line-height:1.5;padding:7px 4px;max-height:160px;outline:none;}
   .pg-textarea::placeholder{color:var(--slate);}
 
@@ -741,71 +713,6 @@
   .md li{margin:3px 0}
   .md h1,.md h2,.md h3,.md h4{margin:14px 0 8px;line-height:1.3}
   .md hr{border:none;border-top:1px solid var(--line);margin:14px 0}
-  .pg-bubble-attach-img{max-width:220px;max-height:160px;object-fit:cover;border-radius:8px;margin-top:8px;display:block}
-  .pg-bubble-attach-video{max-width:260px;border-radius:8px;margin-top:8px;display:block}
-  .pg-bubble-attach-file{display:inline-flex;align-items:center;gap:6px;margin-top:8px;font-family:var(--mono);font-size:12px;background:rgba(0,0,0,.18);border-radius:6px;padding:4px 9px}
-  .pg-effort-badge{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11.5px;color:var(--slate);margin-right:8px}
-  .pg-effort-badge.effort-low{color:var(--good)}
-  .pg-effort-badge.effort-medium{color:#d29922}
-  .pg-effort-badge.effort-high{color:var(--bad)}
-
-  /* New preview styles */
-  .pg-preview-thumb {
-    width: 64px;
-    height: 64px;
-    object-fit: cover;
-    border-radius: 4px;
-    margin-left: 8px;
-  }
-
-  .pg-preview-video {
-    width: 120px;
-    height: 68px;
-    object-fit: cover;
-    border-radius: 4px;
-    margin-left: 8px;
-  }
-
-  .pg-file-preview {
-    display: inline-block;
-    max-width: 150px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: 11px;
-    color: var(--slate);
-    margin-left: 8px;
-    vertical-align: middle;
-  }
-
-  .pg-uploading {
-    font-size: 11px;
-    color: var(--slate);
-    font-style: italic;
-    margin-left: 8px;
-  }
-
-  .pg-attach-name {
-    max-width: 120px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .pg-remove-btn {
-    background: none;
-    border: none;
-    color: var(--slate);
-    cursor: pointer;
-    font-size: 14px;
-    line-height: 1;
-    padding: 0 4px;
-    margin-left: 4px;
-  }
-
-  .pg-remove-btn:hover {
-    color: var(--ink);
-  }
 
   .pg-clear-btn {
     font-family: var(--mono);
@@ -1004,19 +911,18 @@
     <div class="wrap hero-grid">
       <div>
         <div class="feature-chips">
-          <span class="chip">Streaming</span>
           <span class="chip">Function calling</span>
           <span class="chip">Structured output</span>
-          <span class="chip">1M context</span>
-          <span class="chip">Multimodal</span>
-          <span class="chip">Extended reasoning</span>
+          <span class="chip">120K context</span>
+          <span class="chip">100K output ceiling</span>
+          <span class="chip">Automatic failover</span>
           <span class="chip">Live web search</span>
           <span class="chip highlight">All free</span>
         </div>
         <div class="eyebrow-line">v1 · OpenAI-compatible</div>
         <div class="free-badge">✓ Free forever · No credit card · No trial clock</div>
-        <h1 class="headline">One API.<br>Every model.<br>Every feature.<br>For free.</h1>
-        <p class="sub">Sign up, generate a key, and call a single endpoint. Same request format, same response shape, every time.</p>
+        <h1 class="headline">One API.<br>Four models.<br>One that never goes down.<br>For free.</h1>
+        <p class="sub">Sign up, generate a key, and call a single endpoint. Every request tries up to four providers in order until one answers — same request format, same response shape, every time.</p>
         <div class="hero-ctas">
           <button class="btn btn-solid" onclick="go('signup')">Get your API key</button>
           <button class="btn btn-ghost" onclick="go('docs')">Read the docs</button>
@@ -1044,8 +950,7 @@
 <span class="s">    "model": "sentry-1",</span>
 <span class="s">    "messages": [</span>
 <span class="s">      {"role": "user", "content": "explain tail call optimization"}</span>
-<span class="s">    ],</span>
-<span class="s">    "stream": true</span>
+<span class="s">    ]</span>
 <span class="s">  }'</span></pre>
         </div>
 
@@ -1063,14 +968,10 @@ response = requests.post(
         <span class="s">"messages"</span>: [
             {<span class="s">"role"</span>: <span class="s">"user"</span>, <span class="s">"content"</span>: <span class="s">"explain tail call optimization"</span>}
         ],
-        <span class="s">"stream"</span>: <span class="k">True</span>,
     },
-    stream=<span class="k">True</span>,
 )
 
-<span class="k">for</span> line <span class="k">in</span> response.iter_lines():
-    <span class="k">if</span> line:
-        <span class="k">print</span>(line.decode())</pre>
+<span class="k">print</span>(response.json()[<span class="s">"choices"</span>][<span class="k">0</span>][<span class="s">"message"</span>][<span class="s">"content"</span>])</pre>
         </div>
       </div>
     </div>
@@ -1081,11 +982,28 @@ response = requests.post(
       <div class="trust-item"><strong>3,000</strong>free requests / day</div>
       <div class="trust-item"><strong>0</strong>cards on file to start</div>
       <div class="trust-item"><strong>1M</strong>token context window</div>
-      <div class="trust-item"><strong>100%</strong>every feature, every key</div>
+      <div class="trust-item"><strong>4</strong>providers tried per request</div>
       <div class="trust-item stat-highlight"><strong id="stat-users">—</strong>developers signed up</div>
       <div class="trust-item stat-highlight"><strong id="stat-keys">—</strong>API keys generated</div>
     </div>
   </div>
+
+  <section id="routing">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="section-kicker">how a request actually gets answered</div>
+        <h2 class="section-title">Every request reroutes on its own</h2>
+        <p class="section-desc">A single "sentry-1" call is backed by four independent backend routes behind one endpoint. If the first one errors — rate limit, outage, anything — the request moves to the next automatically, in the same call. Nothing is cached as "down" between requests; every call gets a fresh attempt at the top of the list.</p>
+      </div>
+      <div class="feature-list">
+        <div class="feature-item"><div class="feature-item-inner"><div class="feature-name">Route 1 (primary)</div><div class="feature-desc">Tried first on every request. 65,536 max output tokens.</div></div></div>
+        <div class="feature-item"><div class="feature-item-inner"><div class="feature-name">Route 2</div><div class="feature-desc">First reroute target. 8,192 max output tokens.</div></div></div>
+        <div class="feature-item"><div class="feature-item-inner"><div class="feature-name">Route 3</div><div class="feature-desc">Second reroute target. No published output ceiling.</div></div></div>
+        <div class="feature-item"><div class="feature-item-inner"><div class="feature-name">Route 4</div><div class="feature-desc">Last resort. ~32,000 max output tokens.</div></div></div>
+      </div>
+      <p class="section-desc" style="margin-top:20px;">You never pick a route — you always call "sentry-1" and the routing happens behind it. If a fallback happened on your request, you can see that it did (and which numbered route answered) in <code>_debug_trace</code> with the Debug toggle on in the playground — the specific backend behind each route is an internal implementation detail we don't expose.</p>
+    </div>
+  </section>
 
   <section id="what-you-get">
     <div class="wrap">
@@ -1095,13 +1013,12 @@ response = requests.post(
         <p class="section-desc">There are no feature gates. Every key gets the full capability set, with the same generous daily request cap for everyone.</p>
       </div>
       <div class="feature-list">
-        <div class="feature-item"><div class="feature-item-inner"><div class="feature-name">Full sampling control</div><div class="feature-desc">Temperature, top_p, max_tokens, stop sequences, seed, and penalties on every request.</div></div></div>
-        <div class="feature-item"><div class="feature-item-inner"><div class="feature-name">Streaming</div><div class="feature-desc">Token-by-token responses over server-sent events, same as you're used to.</div></div></div>
+        <div class="feature-item"><div class="feature-item-inner"><div class="feature-name">Full sampling control</div><div class="feature-desc">Temperature, top_p, top_k, max_tokens, stop sequences, seed, and penalties on every request.</div></div></div>
+        <div class="feature-item"><div class="feature-item-inner"><div class="feature-name">Automatic failover</div><div class="feature-desc">One provider erroring never means your request fails — it reroutes to the next of four, same call.</div></div></div>
         <div class="feature-item"><div class="feature-item-inner"><div class="feature-name">Structured output</div><div class="feature-desc">JSON mode with schema enforcement for reliable, parseable responses.</div></div></div>
-        <div class="feature-item"><div class="feature-item-inner"><div class="feature-name">1M token context</div><div class="feature-desc">Up to a million tokens of context on every request.</div></div></div>
+        <div class="feature-item"><div class="feature-item-inner"><div class="feature-name">1M token context</div><div class="feature-desc">Up to a million tokens of input context on every request.</div></div></div>
+        <div class="feature-item"><div class="feature-item-inner"><div class="feature-name">High-ceiling output</div><div class="feature-desc">Request up to 100,000 output tokens — automatically capped to whatever the responding model can actually produce, so the request never just errors out.</div></div></div>
         <div class="feature-item"><div class="feature-item-inner"><div class="feature-name">Function calling</div><div class="feature-desc">Tool definitions and tool-use responses, fully OpenAI-compatible.</div></div></div>
-        <div class="feature-item"><div class="feature-item-inner"><div class="feature-name">Multimodal input</div><div class="feature-desc">Image, audio, video, and file upload, supported directly in the messages array.</div></div></div>
-        <div class="feature-item"><div class="feature-item-inner"><div class="feature-name">Extended reasoning</div><div class="feature-desc">Longer, deliberate reasoning traces for problems that need them.</div></div></div>
         <div class="feature-item"><div class="feature-item-inner"><div class="feature-name">Live web search &amp; crawling</div><div class="feature-desc">Ground responses in live pages without leaving the API.</div></div></div>
       </div>
     </div>
@@ -1112,7 +1029,7 @@ response = requests.post(
       <div class="section-head">
         <div class="section-kicker">everything, initialized</div>
         <h2 class="section-title">Every parameter, in one call</h2>
-        <p class="section-desc">A single request showing every initializable option — sampling, streaming, structured output, function calling, multimodal input, extended reasoning, and live web search — all available on the same key.</p>
+        <p class="section-desc">A single request showing every initializable option — sampling, structured output, function calling, and live web search — all available on the same key.</p>
       </div>
       <div class="panel config-panel">
         <div class="panel-head">
@@ -1131,29 +1048,19 @@ response = requests.post(
         <span class="s">"model"</span>: <span class="s">"sentry-1"</span>,
         <span class="s">"messages"</span>: [
             {<span class="s">"role"</span>: <span class="s">"system"</span>, <span class="s">"content"</span>: <span class="s">"You are a concise, accurate assistant."</span>},
-            {
-                <span class="s">"role"</span>: <span class="s">"user"</span>,
-                <span class="s">"content"</span>: [
-                    {<span class="s">"type"</span>: <span class="s">"text"</span>, <span class="s">"text"</span>: <span class="s">"Summarize this image and the linked report."</span>},
-                    {<span class="s">"type"</span>: <span class="s">"image_url"</span>, <span class="s">"image_url"</span>: {<span class="s">"url"</span>: <span class="s">"https://example.com/diagram.png"</span>}},
-                    {<span class="s">"type"</span>: <span class="s">"file_url"</span>, <span class="s">"file_url"</span>: {<span class="s">"url"</span>: <span class="s">"https://example.com/report.pdf"</span>}},
-                ],
-            },
+            {<span class="s">"role"</span>: <span class="s">"user"</span>, <span class="s">"content"</span>: <span class="s">"Summarize the linked report and pull out the three biggest risks."</span>},
         ],
 
         <span class="c"># --- sampling control ---</span>
         <span class="s">"temperature"</span>: <span class="k">0.7</span>,
         <span class="s">"top_p"</span>: <span class="k">1.0</span>,
         <span class="s">"top_k"</span>: <span class="k">40</span>,
-        <span class="s">"max_tokens"</span>: <span class="k">2048</span>,
+        <span class="s">"max_tokens"</span>: <span class="k">100000</span>,  <span class="c"># ceiling — capped per-provider server-side</span>
         <span class="s">"stop"</span>: [<span class="s">"\n\nEND"</span>],
         <span class="s">"seed"</span>: <span class="k">42</span>,
         <span class="s">"presence_penalty"</span>: <span class="k">0.0</span>,
         <span class="s">"frequency_penalty"</span>: <span class="k">0.0</span>,
         <span class="s">"n"</span>: <span class="k">1</span>,
-
-        <span class="c"># --- streaming ---</span>
-        <span class="s">"stream"</span>: <span class="k">True</span>,
 
         <span class="c"># --- structured output ---</span>
         <span class="s">"response_format"</span>: {
@@ -1188,21 +1095,15 @@ response = requests.post(
         ],
         <span class="s">"tool_choice"</span>: <span class="s">"auto"</span>,
 
-        <span class="c"># --- extended reasoning ---</span>
-        <span class="s">"reasoning"</span>: {<span class="s">"enabled"</span>: <span class="k">True</span>, <span class="s">"effort"</span>: <span class="s">"high"</span>},
-
         <span class="c"># --- live web search & crawling ---</span>
         <span class="s">"web_search"</span>: {<span class="s">"enabled"</span>: <span class="k">True</span>, <span class="s">"max_results"</span>: <span class="k">5</span>},
 
         <span class="c"># --- context window ---</span>
-        <span class="s">"context_window"</span>: <span class="k">1000000</span>,
+        <span class="s">"context_window"</span>: <span class="k">120000</span>,
     },
-    stream=<span class="k">True</span>,
 )
 
-<span class="k">for</span> line <span class="k">in</span> response.iter_lines():
-    <span class="k">if</span> line:
-        <span class="k">print</span>(line.decode())</pre>
+<span class="k">print</span>(response.json()[<span class="s">"choices"</span>][<span class="k">0</span>][<span class="s">"message"</span>][<span class="s">"content"</span>])</pre>
       </div>
     </div>
   </section>
@@ -1216,10 +1117,10 @@ response = requests.post(
       </div>
       <div class="free-figure">
         <div class="free-row"><span class="k">Requests / day</span><span class="v">3,000</span></div>
-        <div class="free-row"><span class="k">Max input / request</span><span class="v">8K tokens</span></div>
-        <div class="free-row"><span class="k">Streaming</span><span class="v on">included</span></div>
+        <div class="free-row"><span class="k">Context window</span><span class="v">1M tokens</span></div>
+        <div class="free-row"><span class="k">Max output request</span><span class="v">100K tokens (per-model capped)</span></div>
+        <div class="free-row"><span class="k">Automatic failover</span><span class="v on">included</span></div>
         <div class="free-row"><span class="k">Function calling</span><span class="v on">included</span></div>
-        <div class="free-row"><span class="k">Multimodal input</span><span class="v on">included</span></div>
         <div class="free-row"><span class="k">Card required</span><span class="v">no</span></div>
         <div class="free-row"><span class="k">Expiration</span><span class="v">none</span></div>
       </div>
@@ -1268,8 +1169,20 @@ response = requests.post(
           <div class="faq-a">No. Create an account with just an email and you have a working key immediately.</div>
         </div>
         <div class="faq-item">
+          <div class="faq-q">Do responses stream?</div>
+          <div class="faq-a">No — every response, including in the playground, comes back as one complete JSON payload rather than token-by-token.</div>
+        </div>
+        <div class="faq-item">
+          <div class="faq-q">What happens if a provider is down or rate-limited?</div>
+          <div class="faq-a">Your request reroutes automatically to the next backend route in line within the same call. You don't see the failure or need to retry yourself.</div>
+        </div>
+        <div class="faq-item">
+          <div class="faq-q">What's the actual max output length?</div>
+          <div class="faq-a">You can request up to 100,000 tokens via max_tokens, but real output is bounded by whichever route answers — currently up to 65,536 on the primary route, the highest of the four. Requesting more than a route can produce doesn't error; it's automatically capped.</div>
+        </div>
+        <div class="faq-item">
           <div class="faq-q">Are any features locked away?</div>
-          <div class="faq-a">No. Streaming, function calling, structured output, multimodal input, extended reasoning, and live web search are all available on every key, with no upsell in the way.</div>
+          <div class="faq-a">No. Sampling controls, structured output, function calling, automatic failover, and live web search are all available on every key, with no upsell in the way.</div>
         </div>
         <div class="faq-item">
           <div class="faq-q">Will I get rate-limited without warning?</div>
@@ -1479,10 +1392,6 @@ response = requests.post(
                   Debug
                 </button>
 
-                <button class="pg-chip on" id="pg-stream-chip" onclick="pgToggleChip('pg-stream-chip')" title="Stream responses token-by-token (turn off to wait for the complete reply as one JSON payload)">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"/></svg>
-                  Stream
-                </button>
                 <button class="pg-chip" id="pg-settings-btn" onclick="pgToggleSettings(event)" title="Playground settings: your own system message, temperature, top_p">
                   <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg>
                   Settings
@@ -1491,15 +1400,6 @@ response = requests.post(
                   <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
                   Export
                 </button>
-                <span class="pg-effort-badge effort-medium" id="pg-effort-badge" title="Reasoning effort — how long the model thinks before answering. High uses the largest model and automatically falls back to medium on the free tier.">
-                  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2a7 7 0 0 0-7 7c0 2.4 1.2 4.5 3 5.7V17a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-2.3c1.8-1.2 3-3.3 3-5.7a7 7 0 0 0-7-7z"/><path d="M9 22h6"/></svg>
-                  <span id="pg-effort-label">Reasoning: Medium</span>
-                </span>
-                <div class="pg-segmented" id="pg-effort-group">
-                  <button class="pg-seg-btn" data-val="low" onclick="pgSetEffort('low')">Low</button>
-                  <button class="pg-seg-btn active" data-val="medium" onclick="pgSetEffort('medium')">Medium</button>
-                  <button class="pg-seg-btn" data-val="high" onclick="pgSetEffort('high')">High</button>
-                </div>
               </div>
             </div>
 
@@ -1526,32 +1426,13 @@ response = requests.post(
             <div class="pg-chat" id="pg-chat">
               <div class="pg-row pg-row-assistant">
                 <div class="pg-avatar pg-avatar-assistant">S</div>
-                <div class="pg-bubble pg-bubble-assistant">Ask me anything, toggle live web search for current events, or attach an image, document, video, or voice note below — every feature on the Models page is testable right here.</div>
+                <div class="pg-bubble pg-bubble-assistant">Ask me anything, or toggle live web search for current events — every feature on the Models page is testable right here.</div>
               </div>
             </div>
 
             <div class="backend-warn" id="pg-nokey-warn" style="margin:0 20px 12px;">You need an API key before you can message the playground. <a href="#" onclick="consoleGo('keys'); return false;" style="text-decoration:underline;">Create one on the API keys page</a> — it only takes a second.</div>
 
-            <div class="pg-attachments" id="pg-attachments"></div>
-
             <div class="pg-composer">
-              <div class="pg-attach-wrap">
-                <button class="pg-attach-btn" id="pg-attach-btn" onclick="pgToggleAttachMenu(event)" title="Attach">
-                  <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M5 12h14"/></svg>
-                </button>
-                <div class="pg-attach-menu" id="pg-attach-menu">
-                  <button onclick="pgPickFile('image')"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg> Image</button>
-                  <button onclick="pgPickFile('document')"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg> Document</button>
-                  <button onclick="pgPickFile('video')"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M16 10l6-3v10l-6-3z"/></svg> Video</button>
-                  <button onclick="pgPickFile('audio')"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4"/></svg> Upload audio</button>
-                  <button onclick="pgToggleRecording()" id="pg-record-btn"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><circle cx="12" cy="12" r="7"/></svg> <span id="pg-record-label">Record voice</span></button>
-                </div>
-                <input type="file" id="pg-file-image" accept="image/*" style="display:none;" onchange="pgFileChosen(event,'image')">
-                <input type="file" id="pg-file-document" accept=".pdf,.doc,.docx,.txt,.csv,.md" style="display:none;" onchange="pgFileChosen(event,'document')">
-                <input type="file" id="pg-file-video" accept="video/*" style="display:none;" onchange="pgFileChosen(event,'video')">
-                <input type="file" id="pg-file-audio" accept="audio/*" style="display:none;" onchange="pgFileChosen(event,'audio')">
-              </div>
-
               <textarea id="pg-input" class="pg-textarea" placeholder="Message Sentry 1..." rows="1" oninput="pgAutoGrow(this); updateTokenCount()" onkeydown="pgHandleKeydown(event)"></textarea>
 
               <button class="pg-send-btn" id="pg-send-btn" onclick="pgSend()" title="Send">
@@ -1612,13 +1493,13 @@ response = requests.post(
         <div class="console-pane" id="cpane-models">
           <div class="console-head">
             <h1>Models</h1>
-            <p>Every model below carries the full feature set — streaming, tools, vision, extended reasoning, live web search — on the free plan, no separate unlocks. We're starting with Sentry 1; future generations will simply be stronger versions of the same model.</p>
+            <p>"sentry-1" is one endpoint with automatic failover across four backend routes — full feature set, on the free plan, no separate unlocks.</p>
           </div>
           <div class="model-grid">
             <div class="model-card">
-              <div class="mc-top"><span class="mc-name">sentry-1</span><span class="mc-ctx">1M context</span></div>
-              <div class="mc-desc">Our flagship model, and for now our only one. Fully capable across every feature — chat, extended reasoning, and tool use.</div>
-              <div class="mc-tags"><span>streaming</span><span>tools</span><span>vision</span><span>extended reasoning</span><span>live web search</span></div>
+              <div class="mc-top"><span class="mc-name">sentry-1</span><span class="mc-ctx">120K context</span></div>
+              <div class="mc-desc">Tries the primary route first, then reroutes to the next backend route on any error — you always call "sentry-1" and get back one consistent response.</div>
+              <div class="mc-tags"><span>tools</span><span>text</span><span>live web search</span><span>automatic failover</span></div>
             </div>
           </div>
         </div>
@@ -1681,7 +1562,7 @@ response = requests.post(
         <span id="km-key-value">sk-sentry-...</span>
         <button onclick="copyKey()" id="km-copy-btn">copy</button>
       </div>
-      <p style="font-size:13px;color:var(--ink-dim);line-height:1.5;">Every feature — streaming, tools, vision, extended reasoning, and live web search — is already switched on for this key by default. Nothing extra to enable.</p>
+      <p style="font-size:13px;color:var(--ink-dim);line-height:1.5;">Every feature — tools, automatic failover, and live web search — is already switched on for this key by default. Nothing extra to enable.</p>
 
       <div class="panel" style="margin-bottom:14px;">
         <div class="panel-head">
@@ -1722,26 +1603,24 @@ response = requests.post(
       <h3>Authentication</h3>
       <p>Every request must include your API key as a bearer token: <code>Authorization: Bearer sk-sentry-...</code>. Keys can be named, listed, and revoked independently from your console. Revoking a key takes effect immediately.</p>
       <h3>Endpoints</h3>
-      <p><code>POST /v1/chat/completions</code> — send messages, get a completion or a stream.<br>
+      <p><code>POST /v1/chat/completions</code> — send messages, get a completion.<br>
       <code>GET /v1/models</code> — list available model identifiers.</p>
       <h3>Rate limits</h3>
       <p>Every response includes <code>X-RateLimit-Limit</code>, <code>X-RateLimit-Remaining</code>, and <code>X-RateLimit-Reset</code> headers so you can track usage against your daily cap in real time. Exceeding the cap returns a <code>429</code> with a <code>Retry-After</code> header.</p>
-      <h3>Streaming</h3>
-      <p>Set <code>"stream": true</code> to receive the response as server-sent events. Each event contains a partial delta; the stream ends with a <code>data: [DONE]</code> line.</p>
+      <h3>Responses</h3>
+      <p>Every response is a single JSON payload — no streaming, no server-sent events. Set <code>max_tokens</code> up to 100,000; the actual ceiling is capped per-route server-side (currently 65,536 on the primary route, the highest of the four), so an over-large request is automatically clamped rather than rejected.</p>
       <h3>Structured output</h3>
       <p>Pass a <code>response_format</code> of type <code>json_schema</code> to constrain output to a schema. Responses that don't validate are automatically retried once server-side before being returned.</p>
       <h3>Function calling</h3>
       <p>Define functions under <code>tools</code> and set <code>tool_choice</code> to <code>auto</code>, <code>required</code>, or a specific function name. The model returns a <code>tool_calls</code> array instead of plain text when it decides to call one.</p>
-      <h3>Multimodal input</h3>
-      <p>Attach image, audio, video, or file content directly in the messages array alongside your text, using <code>image_url</code> or <code>file_url</code> content blocks.</p>
-      <h3>Extended reasoning</h3>
-      <p>Set <code>reasoning.enabled</code> to <code>true</code> and choose an <code>effort</code> of <code>low</code>, <code>medium</code>, or <code>high</code> for problems that benefit from longer deliberation before answering.</p>
+      <h3>Automatic failover</h3>
+      <p>Every request routes through up to four backend routes in order. If one errors — rate limit, outage, anything — the request reroutes to the next automatically, within the same call. Nothing about a failed route is remembered between requests; every call starts fresh at the top of the list. Turn on Debug in the playground to see <code>_debug_trace</code>, showing whether a fallback happened and which numbered route answered.</p>
       <h3>Live web search</h3>
       <p>Set <code>web_search.enabled</code> to <code>true</code> to let a request ground its answer in live pages, with <code>max_results</code> controlling how many sources are consulted.</p>
       <h3>Errors</h3>
       <p>Errors follow <code>{"error": {"type": "...", "message": "..."}}</code>. Common types: <code>invalid_request</code>, <code>authentication_error</code>, <code>rate_limit_exceeded</code>, <code>server_error</code>.</p>
       <h3>SDKs</h3>
-      <p>No dedicated SDK needed — point any OpenAI-compatible client at <code>https://api.sentryai.ai/v1</code> and swap in your Sentry key.</p>
+      <p>No dedicated SDK needed — point any OpenAI-compatible client at <code>https://api.sentryai.ai/v1</code> and swap in your Sentry key. (Streaming clients still work for the request shape, but every response comes back as one complete payload rather than deltas.)</p>
     </div>
   </div>
 </div>
@@ -1756,8 +1635,12 @@ response = requests.post(
     </div>
     <div class="simple-list">
       <div class="simple-entry">
+        <div class="se-top"><span class="se-date">2026-09-17</span><span class="se-title">Text-only rebuild: no streaming, no multimodal, automatic failover</span></div>
+        <div class="se-desc">Removed streaming, multimodal input (image/audio/video/file upload), and the reasoning-effort control from the playground. Replaced key cooldowns with immediate rerouting — a failed route is retried fresh on every request instead of being remembered as "down." Raised the requestable max_tokens ceiling to 100,000, clamped per-route to what each one can actually produce (currently 65,536 on the primary route, the highest of the four).</div>
+      </div>
+      <div class="simple-entry">
         <div class="se-top"><span class="se-date">2026-08-14</span><span class="se-title">Extended reasoning effort levels</span></div>
-        <div class="se-desc">Added low / medium / high effort controls to the reasoning parameter.</div>
+        <div class="se-desc">Added low / medium / high effort controls to the reasoning parameter. (Removed from the playground as of 2026-09-17, above.)</div>
       </div>
       <div class="simple-entry">
         <div class="se-top"><span class="se-date">2026-07-20</span><span class="se-title">Rate-limit headers on every response</span></div>
@@ -1793,9 +1676,8 @@ response = requests.post(
     </div>
     <div class="simple-list">
       <div class="status-row"><span>API — /v1/chat/completions</span><span class="status-dot">operational</span></div>
-      <div class="status-row"><span>Streaming (SSE)</span><span class="status-dot">operational</span></div>
+      <div class="status-row"><span>Automatic failover (4 backend routes)</span><span class="status-dot">operational</span></div>
       <div class="status-row"><span>Function calling</span><span class="status-dot">operational</span></div>
-      <div class="status-row"><span>Extended reasoning</span><span class="status-dot">operational</span></div>
       <div class="status-row"><span>Structured output</span><span class="status-dot">operational</span></div>
       <div class="status-row"><span>Live web search &amp; crawling</span><span class="status-dot">operational</span></div>
       <div class="status-row"><span>Dashboard</span><span class="status-dot">operational</span></div>
@@ -1805,7 +1687,7 @@ response = requests.post(
     <div class="simple-list">
       <div class="simple-entry">
         <div class="se-top"><span class="se-date">2026-07-03</span><span class="se-title">Elevated error rates on streaming requests</span></div>
-        <div class="se-desc">14-minute window of intermittent 5xx errors on streamed responses. Resolved; no action needed from API users.</div>
+        <div class="se-desc">14-minute window of intermittent 5xx errors on streamed responses. Streaming has since been removed entirely (2026-09-17) — every response is now a single JSON payload.</div>
       </div>
     </div>
   </div>
@@ -2356,248 +2238,10 @@ response = requests.post(
   }
 
   /* ---------- Playground ---------- */
-  let pgAttachments = []; // {kind, name, file, url, preview}
-  let pgEffort = 'medium';
-  let pgMediaRecorder = null;
-  let pgRecordedChunks = [];
   let pgMessages = []; // Conversation history
-  let pgStreaming = false;
-
 
   function pgToggleChip(id){
     document.getElementById(id).classList.toggle('on');
-  }
-
-  function pgSetEffort(val){
-    pgEffort = val;
-    document.querySelectorAll('#pg-effort-group .pg-seg-btn').forEach(b => b.classList.toggle('active', b.dataset.val === val));
-    const badge = document.getElementById('pg-effort-badge');
-    const label = document.getElementById('pg-effort-label');
-    if (badge) {
-      badge.className = 'pg-effort-badge effort-' + val;
-      badge.title = 'Reasoning effort: ' + val.charAt(0).toUpperCase() + val.slice(1) +
-        (val === 'high' ? ' — largest model; falls back to medium on the free tier.' : ' — how long the model thinks before answering.');
-    }
-    if (label) label.textContent = 'Reasoning: ' + val.charAt(0).toUpperCase() + val.slice(1);
-  }
-
-  // Fixed attachment menu with proper event handling
-  let pgAttachMenuOpen = false;
-
-  function pgToggleAttachMenu(e){
-    e.stopPropagation();
-    e.preventDefault();
-    const menu = document.getElementById('pg-attach-menu');
-    pgAttachMenuOpen = !pgAttachMenuOpen;
-    menu.classList.toggle('open', pgAttachMenuOpen);
-  }
-
-  function pgCloseAttachMenu(){
-    pgAttachMenuOpen = false;
-    document.getElementById('pg-attach-menu')?.classList.remove('open');
-  }
-
-  // Close on outside click
-  document.addEventListener('click', (e) => {
-    if (pgAttachMenuOpen && !e.target.closest('.pg-attach-wrap')) {
-      pgCloseAttachMenu();
-    }
-  });
-
-  // Close on Escape key
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && pgAttachMenuOpen) {
-      pgCloseAttachMenu();
-    }
-  });
-
-  function pgPickFile(kind){
-    pgCloseAttachMenu();
-    document.getElementById('pg-file-' + kind).click();
-  }
-
-  // Upload via our own backend, which does a signed Cloudinary upload.
-  // (Never call Cloudinary directly from the browser with a secret key —
-  // this keeps credentials server-side.)
-  async function pgUploadToCloudinary(file, resourceType) {
-    if (!window.API_BASE) {
-      throw new Error('No backend configured (window.API_BASE not set)');
-    }
-
-    const formData = new FormData();
-    formData.append('file', file);
-
-    const resp = await fetch(window.API_BASE + '/console/upload', {
-      method: 'POST',
-      headers: { ...authHeaders() },
-      body: formData,
-    });
-
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}));
-      throw new Error(err.error || 'Upload failed');
-    }
-
-    const data = await resp.json();
-    return data.url;
-  }
-
-  // Get file preview based on type
-  function pgGetFilePreview(file) {
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onload = (e) => resolve(e.target.result);
-      reader.onerror = () => resolve(null);
-
-      if (file.type.startsWith('image/')) {
-        reader.readAsDataURL(file);
-      } else if (file.type.startsWith('video/')) {
-        reader.readAsDataURL(file);
-      } else {
-        // For files, read first 500 chars as text preview
-        reader.readAsText(file.slice(0, 2000));
-      }
-    });
-  }
-
-  async function pgFileChosen(e, kind){
-    const file = e.target.files[0];
-    if(!file) return;
-
-    // Size guard: 10MB max
-    if (file.size > 10 * 1024 * 1024) {
-      alert('File too large. Maximum size is 10MB.');
-      e.target.value = '';
-      return;
-    }
-
-    pgCloseAttachMenu();
-
-    // Show loading state
-    const attachment = {kind, name: file.name, file, url: null, preview: null, uploading: true};
-    pgAttachments.push(attachment);
-    pgRenderAttachments();
-
-    try {
-      let url = null;
-      let preview = null;
-
-      // Get preview first
-      preview = await pgGetFilePreview(file);
-
-      // Upload to Cloudinary for images, videos, and audio
-      if (kind === 'image' || kind === 'video' || kind === 'audio') {
-        try {
-          // Cloudinary files audio under its "video" resource type
-          const resourceType = kind === 'image' ? 'image' : 'video';
-          url = await pgUploadToCloudinary(file, resourceType);
-        } catch (err) {
-          console.error('Cloudinary upload failed:', err);
-          // Fall back to base64 for images if Cloudinary fails
-          if (kind === 'image') {
-            url = preview; // preview is data URL for images
-          } else {
-            throw err;
-          }
-        }
-      }
-
-      // Update attachment with URL and preview
-      attachment.url = url;
-      attachment.preview = preview;
-      attachment.uploading = false;
-      pgRenderAttachments();
-
-    } catch (err) {
-      alert(`Failed to process ${kind}: ${err.message}`);
-      pgAttachments = pgAttachments.filter(a => a !== attachment);
-      pgRenderAttachments();
-    }
-
-    e.target.value = '';
-  }
-
-  function pgRemoveAttachment(idx){
-    pgAttachments.splice(idx, 1);
-    pgRenderAttachments();
-  }
-
-  const PG_KIND_ICON = {
-    image: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>',
-    document: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>',
-    video: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M16 10l6-3v10l-6-3z"/></svg>',
-    audio: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4"/></svg>',
-  };
-
-  function pgRenderAttachments(){
-    const wrap = document.getElementById('pg-attachments');
-    wrap.innerHTML = '';
-    pgAttachments.forEach((a, idx) => {
-      const chip = document.createElement('div');
-      chip.className = 'pg-attach-chip';
-
-      let previewHtml = '';
-      if (a.uploading) {
-        previewHtml = '<span class="pg-uploading">Uploading...</span>';
-      } else if (a.kind === 'image' && a.preview) {
-        previewHtml = `<img src="${a.preview}" class="pg-preview-thumb" alt="preview">`;
-      } else if (a.kind === 'video' && a.preview) {
-        previewHtml = `<video src="${a.preview}" class="pg-preview-video" muted></video>`;
-      } else if (a.kind === 'document' && a.preview) {
-        const textPreview = a.preview.substring(0, 100).replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        previewHtml = `<span class="pg-file-preview">${textPreview}...</span>`;
-      }
-
-      chip.innerHTML = `
-        ${PG_KIND_ICON[a.kind] || ''} 
-        <span class="pg-attach-name">${a.name}</span>
-        ${previewHtml}
-        <button onclick="pgRemoveAttachment(${idx})" class="pg-remove-btn">&times;</button>
-      `;
-      wrap.appendChild(chip);
-    });
-  }
-
-  async function pgToggleRecording(){
-    const btn = document.getElementById('pg-record-btn');
-    const label = document.getElementById('pg-record-label');
-    if(pgMediaRecorder && pgMediaRecorder.state === 'recording'){
-      pgMediaRecorder.stop();
-      return;
-    }
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({audio: true});
-      pgRecordedChunks = [];
-      pgMediaRecorder = new MediaRecorder(stream);
-      pgMediaRecorder.ondataavailable = ev => pgRecordedChunks.push(ev.data);
-      pgMediaRecorder.onstop = async () => {
-        const blob = new Blob(pgRecordedChunks, {type: 'audio/webm'});
-        const file = new File([blob], `voice-note-${Date.now()}.webm`, {type: 'audio/webm'});
-        const attachment = {kind: 'audio', name: file.name, file, url: null, preview: null, uploading: true};
-        pgAttachments.push(attachment);
-        pgRenderAttachments();
-        stream.getTracks().forEach(t => t.stop());
-        btn.classList.remove('recording');
-        label.textContent = 'Record voice';
-        pgCloseAttachMenu();
-
-        try {
-          attachment.url = await pgUploadToCloudinary(file, 'video'); // audio files upload under Cloudinary's video resource type
-        } catch (err) {
-          console.error('Voice note upload failed:', err);
-          alert('Failed to upload voice note: ' + err.message);
-          pgAttachments = pgAttachments.filter(a => a !== attachment);
-        }
-        attachment.uploading = false;
-        pgRenderAttachments();
-      };
-      pgMediaRecorder.start();
-      btn.classList.add('recording');
-      label.textContent = 'Stop recording...';
-    } catch(e) {
-      pgAppendMessage('assistant', 'Microphone access was denied or unavailable in this browser.');
-      pgCloseAttachMenu();
-    }
   }
 
   /* ---------- playground settings panel ---------- */
@@ -2695,22 +2339,6 @@ response = requests.post(
     return bubble;
   }
 
-  function pgAppendStreamingMessage(role){
-    const chat = document.getElementById('pg-chat');
-    const row = document.createElement('div');
-    row.className = 'pg-row pg-row-' + role;
-    const avatar = document.createElement('div');
-    avatar.className = 'pg-avatar pg-avatar-' + role;
-    avatar.textContent = role === 'user' ? 'U' : 'S';
-    const bubble = document.createElement('div');
-    bubble.className = 'pg-bubble pg-bubble-' + role;
-    row.appendChild(avatar);
-    row.appendChild(bubble);
-    chat.appendChild(row);
-    chat.scrollTop = chat.scrollHeight;
-    return bubble;
-  }
-
   function pgAppendTyping(){
     const chat = document.getElementById('pg-chat');
     const row = document.createElement('div');
@@ -2727,68 +2355,10 @@ response = requests.post(
       document.getElementById('pg-chat').innerHTML = `
         <div class="pg-row pg-row-assistant">
           <div class="pg-avatar pg-avatar-assistant">S</div>
-          <div class="pg-bubble pg-bubble-assistant">Ask me anything, toggle live web search for current events, or attach an image, document, video, or voice note below.</div>
+          <div class="pg-bubble pg-bubble-assistant">Ask me anything, or toggle live web search for current events.</div>
         </div>
       `;
     }
-  }
-
-  // Parse SSE stream and return full text. Named events (event: debug,
-  // event: search-images) are routed to onEvent(eventName, data); plain
-  // `data:` lines with no preceding `event:` are treated as content chunks.
-  async function pgParseSSEStream(response, onChunk, onEvent) {
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let fullText = '';
-    let buffer = '';
-    let pendingEvent = null;
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || ''; // Keep incomplete line in buffer
-
-      for (const line of lines) {
-        if (line.startsWith('event: ')) {
-          pendingEvent = line.slice(7).trim();
-          continue;
-        }
-        if (line.startsWith('data: ')) {
-          const data = line.slice(6);
-          if (data === '[DONE]') {
-            return fullText;
-          }
-          if (pendingEvent) {
-            try { onEvent && onEvent(pendingEvent, JSON.parse(data)); } catch (e) { /* skip */ }
-            pendingEvent = null;
-            continue;
-          }
-          try {
-            const chunk = JSON.parse(data);
-            // Handle OpenAI format
-            if (chunk.choices && chunk.choices[0]?.delta?.content) {
-              const content = chunk.choices[0].delta.content;
-              fullText += content;
-              onChunk(content);
-            }
-            // Handle Gemini format
-            else if (chunk.candidates && chunk.candidates[0]?.content?.parts?.[0]?.text) {
-              const content = chunk.candidates[0].content.parts[0].text;
-              fullText += content;
-              onChunk(content);
-            }
-          } catch (e) {
-            // Skip invalid JSON
-          }
-        } else if (line.trim() === '') {
-          pendingEvent = null; // blank line ends an SSE event block
-        }
-      }
-    }
-    return fullText;
   }
 
   // Renders a collapsed-by-default trace panel from backend `_debug_trace`
@@ -2827,89 +2397,26 @@ response = requests.post(
   async function pgSend(){
     const input = document.getElementById('pg-input');
     const text = input.value.trim();
-    if(!text && !pgAttachments.length) return;
-    const atts = pgAttachments.slice();
-    pgAttachments = [];
-    pgRenderAttachments();
+    if(!text) return;
     input.value = '';
     input.style.height = 'auto';
     updateTokenCount();
-    await pgSendMessage(text, atts);
+    await pgSendMessage(text);
   }
 
   // Shared send pipeline — used by the composer and by "send result to AI"
-  // on executed code blocks. `attachments` is a pre-captured snapshot.
-  async function pgSendMessage(text, attachments){
-    attachments = attachments || [];
-    if(!text && !attachments.length) return;
+  // on executed code blocks.
+  async function pgSendMessage(text){
+    if(!text) return;
 
     if(window.API_BASE && !consoleState.keys.length){
       alert('You need an API key before you can use the playground. Head to API keys and create one first.');
       return;
     }
 
-    // Build message content
-    let messageContent = text;
-    const imageAttachments = attachments.filter(a => a.kind === 'image' && a.url);
-    const videoAttachments = attachments.filter(a => a.kind === 'video' && a.url);
-    const audioAttachments = attachments.filter(a => a.kind === 'audio' && a.url);
-    const docAttachments = attachments.filter(a => a.kind === 'document' && a.file);
-
-    if (imageAttachments.length > 0 || videoAttachments.length > 0 || audioAttachments.length > 0) {
-      const contentBlocks = [];
-      if (text) contentBlocks.push({type: 'text', text});
-
-      for (const a of imageAttachments) {
-        contentBlocks.push({
-          type: 'image_url',
-          image_url: {url: a.url}
-        });
-      }
-
-      for (const a of videoAttachments) {
-        contentBlocks.push({
-          type: 'video_url',
-          video_url: {url: a.url}
-        });
-      }
-
-      for (const a of audioAttachments) {
-        contentBlocks.push({
-          type: 'audio_url',
-          audio_url: {url: a.url}
-        });
-      }
-
-      messageContent = contentBlocks;
-    }
-
-    // Handle document attachments - convert to text
-    let docText = '';
-    for (const a of docAttachments) {
-      try {
-        const text = await pgReadFileAsText(a.file);
-        docText += `\n\n--- ${a.name} ---\n${text.substring(0, 5000)}`;
-      } catch (e) {
-        console.error('Failed to read file:', e);
-      }
-    }
-
-    if (docText) {
-      messageContent = (typeof messageContent === 'string' ? messageContent : '') + docText;
-    }
-
     // Add to history
-    pgMessages.push({role: 'user', content: messageContent});
-
-    const attachedNow = attachments;
-
-    // Display user message — attachments get the chip layout, plain text
-    // (e.g. code results) renders as markdown so code blocks stay readable.
-    if(attachedNow.length){
-      pgAppendUserMessage(text, attachedNow);
-    } else {
-      pgAppendMessage('user', text);
-    }
+    pgMessages.push({role: 'user', content: text});
+    pgAppendMessage('user', text);
 
     const searchOn = document.getElementById('pg-search-chip').classList.contains('on');
     const jsonOn = document.getElementById('pg-json-chip').classList.contains('on');
@@ -2934,10 +2441,9 @@ response = requests.post(
       model: 'sentry-1',
       messages: messagesToSend,
       web_search: {enabled: searchOn},
-      reasoning: {enabled: true, effort: pgEffort},
       temperature: parseFloat(document.getElementById('pg-temp').value),
       top_p: parseFloat(document.getElementById('pg-topp').value),
-      stream: document.getElementById('pg-stream-chip').classList.contains('on'),
+      max_tokens: 100000, // ceiling only — actual output is capped per-route server-side (see Docs)
     };
 
     if (jsonOn) {
@@ -2963,48 +2469,13 @@ response = requests.post(
           }
           // Remove failed message from history
           pgMessages.pop();
-        } else if (resp.headers.get('content-type')?.includes('text/event-stream')) {
-          // Handle streaming response
-          const bubble = pgAppendStreamingMessage('assistant');
-          let fullText = '';
-          let streamTrace = null;
-
-          await pgParseSSEStream(resp, (chunk) => {
-            fullText += chunk;
-            bubble.textContent = fullText;
-            // Auto-scroll
-            const chat = document.getElementById('pg-chat');
-            chat.scrollTop = chat.scrollHeight;
-          }, (eventName, data) => {
-            if (eventName === 'debug') streamTrace = data.trace;
-          });
-
-          // Re-render the finished stream as full markdown (highlighted code,
-          // images, tables, run buttons) instead of raw text with asterisks.
-          bubble.innerHTML = pgRenderMarkdown(fullText);
-          {
-            const chatEl = document.getElementById('pg-chat');
-            chatEl.scrollTop = chatEl.scrollHeight;
-          }
-
-          if (debugOn) {
-            const panel = pgRenderDebugTrace(streamTrace);
-            if (panel) bubble.appendChild(panel);
-          }
-
-          // Add to history
-          pgMessages.push({role: 'assistant', content: fullText});
         } else {
-          // Non-streaming response
           const data = await resp.json();
           const content = data.choices?.[0]?.message?.content || '(no content)';
           const bubble = pgAppendMessage('assistant', content);
           if (debugOn) {
             const panel = pgRenderDebugTrace(data._debug_trace);
             if (panel) bubble.appendChild(panel);
-          }
-          if (data._reasoning_downgraded) {
-            pgAppendMessage('assistant', 'ℹ️ The high-effort model is not available on the free tier — this answer used the medium model instead.');
           }
           if (data._web_search_degraded) {
             pgAppendMessage('assistant', '⚠️ Live web search was unavailable for this request (all search-capable providers failed) — answered without it.');
@@ -3020,12 +2491,9 @@ response = requests.post(
       // Simulated response for demo
       setTimeout(() => {
         thinkingRow.remove();
-        const parts = [];
-        if(attachedNow.length) parts.push(`(reading ${attachedNow.map(a => a.name).join(', ')}) `);
-        parts.push(jsonOn
+        const reply = jsonOn
           ? '{"response": "This is a simulated JSON-mode reply — connect a backend at window.API_BASE to see real output."}'
-          : 'This is a simulated Playground reply — connect a backend at window.API_BASE to see real model output' + (searchOn ? ', including live search results' : '') + '.');
-        const reply = parts.join('');
+          : 'This is a simulated Playground reply — connect a backend at window.API_BASE to see real model output' + (searchOn ? ', including live search results' : '') + '.';
         pgAppendMessage('assistant', reply);
         pgMessages.push({role: 'assistant', content: reply});
       }, searchOn ? 1000 : 600);
@@ -3034,14 +2502,6 @@ response = requests.post(
     sendBtn.disabled = false;
   }
 
-  function pgReadFileAsText(file) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = reject;
-      reader.readAsText(file);
-    });
-  }
 
 let pendingKeyName = '';
   function openKeyModal(){
@@ -3258,20 +2718,18 @@ print(response.json())`;
     'me: I will use AI responsibly. also me: 47 tabs open asking Sentry to name my cat',
     'our uptime is more reliable than your group chat replies',
     'free forever, unlike your gym membership resolve',
-    'we give you 1M context so you can finally paste the whole group chat',
+    'we give you 120K context so you can finally paste the whole group chat',
     'no credit card required, only your undivided attention',
     'AI models are like siblings: same training data, wildly different personalities',
-    'streaming responses so fast your anxiety cant even keep up',
-    'extended reasoning: because sometimes the model needs a minute, we get it',
+    'four providers on standby so one bad day never becomes your bad day',
     'function calling: teaching AI to actually do the dishes, eventually',
     '3000 free requests a day, or as we call it, emotional support tokens',
-    'multimodal means it judges your fonts AND your code now',
     'structured output: the only structure some of us have in our lives',
     'live web search because even AI doubts your training data',
     'sk-sentry- keys: the only secret you should never text your ex',
     'our API is OpenAI-compatible, our vibes are unmatched',
     'revoking a key takes effect immediately, unlike your New Years resolutions',
-    'one endpoint to rule them all, zero regrets to hold them',
+    'one endpoint, four providers, zero regrets to hold them',
     'Sentry 1 today, Sentry 2 tomorrow, your rent unfortunately unchanged',
     'AI wont replace you, but someone using Fluid Intelligence well might',
     'we built this so you stop paying for tokens like they are concert tickets',
@@ -3280,8 +2738,7 @@ print(response.json())`;
     'our docs are shorter than your terms and conditions scrolling habit',
     'built by people who also forgot their own API key at least once',
     'Fluid Intelligence: fluent in code, sarcasm still in beta',
-    'every model, every feature, every excuse to procrastinate productively',
-    'we do vision too, mostly used to judge your desk setup',
+    'every provider, every fallback, every excuse to procrastinate productively',
     'tail call optimization explained faster than your coworker explains anything',
     'behind every great prompt is a slightly confused human, we see you',
     'we are free so you can spend your budget on coffee, priorities first',
