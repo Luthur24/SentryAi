@@ -1,58 +1,67 @@
 """
-Fluid Intelligence backend — all four providers, flat routing, no reasoning tiers.
+Fluid Intelligence backend — text-only, multi-model fallback, branding-safe.
 
-What changed in this edit (everything the user asked for):
-1) All four providers active (fixed 2026-09-16): Gemini, Groq, Mistral, Zai —
-   in that order (DEFAULT_ORDER). Every request tries Gemini first; if every
-   Gemini key fails (rate limit, quota, outage) it falls through to Groq,
-   then Mistral, then Zai, automatically, inside call_model(). Set
-   GEMINI_ONLY=1 to go back to Gemini-exclusive (no fallback at all).
-2) Gemini key slots: GEMINI_API_KEY_1 / GEMINI_API_KEY_2 env vars, or a single
-   GEMINI_API_KEY env var with comma-separated keys. Same _1/_2 pattern for
-   GROQ_API_KEY, MISTRAL_API_KEY, ZAI_API_KEY.
-3) JSON mode is now driven the same way as web search: the system prompt tells
-   the model JSON mode is on and exactly what schema to produce; the backend
-   validates and retries once on failure (validate_and_fix_json kept).
-4) MAX_INPUT_TOKENS raised to the Gemini context maximum (1M), env-overridable.
-5) No more reasoning tiers (fixed 2026-09-16) — sentry-1 no longer exposes
-   low/medium/high. One fixed model per provider instead:
-      gemini  -> gemini-3.7-flash
-      groq    -> qwen/qwen3.6-27b   (was llama-4-scout, shut down 2026-07-17;
-                 qwen3.6 is multimodal, so Groq remains the image fallback)
-      mistral -> ministral-8b-2512  (mistral-large-2512 isn't available on
-                 this account's subscription tier — confirmed via a live
-                 "model not available" error, so it's not used anywhere)
-      zai     -> glm-4.7-flash      (genuinely free, no request-count cap —
-                 the fallback that never actually runs dry)
-   (all four IDs are env-overridable — GEMINI_MODEL / GROQ_MODEL /
-   MISTRAL_MODEL / ZAI_MODEL.)
-6) Tavily: the model controls it via tags, like web search already did:
+Architecture as of this rebuild (2026-09-17):
 
+1) TEXT ONLY. No multimodal input anywhere — no Cloudinary, no audio
+   transcription, no image/video/file blocks. Every provider is plain text.
+
+2) NO COOLDOWNS. No DB-backed "key is down" state. Every request tries
+   every model/key fresh; a failure reroutes immediately to the next one.
+   Nothing persisted between requests.
+
+3) NO STREAMING. Every response is one plain JSON payload.
+
+4) NO REASONING TIERS. No low/medium/high, no reasoning_effort param.
+
+5) MULTI-MODEL FALLBACK PER PROVIDER (new, replaces the single fixed model
+   each provider had before). This is the fix for repeated "model does not
+   exist / no access" 404s: if a model 404s, skip straight to the next
+   MODEL for that provider (no point retrying a dead model ID on another
+   key) — only fall through to the next PROVIDER once every model for the
+   current one is exhausted.
+       gemini  -> gemini-3.7-flash, gemini-3.5-flash, gemini-3.5-flash-lite
+       groq    -> llama-3.3-70b-versatile, openai/gpt-oss-120b,
+                  llama-3.1-8b-instant
+                  (dropped qwen/qwen3.6-27b and llama-4-scout — both
+                  confirmed 404 "no access" on this account. These three
+                  are Groq's established production text models, not
+                  preview/vision tier, so far less likely to be gated)
+       mistral -> ministral-8b-2512, ministral-3b-2512
+                  (mistral-large-2512 still isn't on this account's tier)
+       zai     -> glm-4.7-flash, glm-4.5-flash (both genuinely $0 on Z.ai's
+                  own API)
+   Env-overridable as comma-separated lists: GEMINI_MODELS / GROQ_MODELS /
+   MISTRAL_MODELS / ZAI_MODELS.
+
+6) MAX_INPUT_TOKENS = 120,000 (was 1,000,000, sized only for Gemini). The
+   real context window of every model above: Gemini ~1M+, Mistral 262K,
+   Zai 200K, Groq 131K — Groq's 131,072 is the tightest ceiling across all
+   four providers now in play. 120,000 sits safely under that with room
+   for output, while still clearing the requested 100K+ floor.
+
+7) MAX_OUTPUT_TOKENS = 100,000 request-side ceiling, clamped per provider
+   to what its models can actually produce (PROVIDER_MAX_OUTPUT_TOKENS) so
+   an over-large max_tokens gets capped instead of erroring out.
+
+8) BRANDING / PRIVACY (new, 2026-09-17): Sentry 1 is presented as its own
+   system. The specific backend providers/models it routes across
+   (Gemini, Groq, Mistral, Zai) are an internal implementation detail and
+   must never reach anything a user or API caller can see:
+     - The JSON response never includes which provider/model answered.
+     - A total-failure error returns one generic message to the caller;
+       the real per-provider detail goes to logger.error only (check
+       server logs, not the API response, to see which backend failed).
+     - The debug trace (_debug_trace / the playground's Debug toggle)
+       shows stage/timing info and generic route labels ("route 1",
+       "route 2", ...) — never real provider or model identifiers.
+     - Real names live in three places only: this file's config, the
+       DEFAULT_ORDER/OPENAI_STYLE/GEMINI_MODELS structures, and server
+       logs. Nowhere else.
+
+9) Tavily web search unchanged — model-controlled via tags:
       [SEARCH: query | n=10 | depth=advanced | images=yes]
-      [FETCH: https://example.com/article]   <- full-page crawl of any URL
-   Search results can include images; those URLs are injected into context and
-   the model is explicitly allowed to reference them as markdown images
-   (![desc](url)) which the playground renders inline. Non-streaming responses
-   also carry a _search_images field.
-7) Playground controls wired through: client temperature / top_p / top_k /
-   max_tokens are forwarded into Gemini's generationConfig (previously only
-   the disconnected openai-style providers received them).
-8) Reliability fixes (2026-09-17) after image uploads started 502ing:
-   - Groq model swapped: meta-llama/llama-4-scout-17b-16e-instruct was
-     shut down on the free tier (2026-07-17). Default is now
-     qwen/qwen3.6-27b (multimodal: reasoning + vision, so it can serve
-     as the image-fallback when Gemini quota dies). GROQ_MODEL env var
-     can still point it at openai/gpt-oss-120b (text-only, production).
-   - Key cooldowns RE-ENABLED (they were no-op pass): a quota-dead key
-     is now skipped until its cooldown expires — quota errors cool down
-     until the UTC day rolls over, so a dead Gemini key no longer adds
-     seconds of failing retries to every request.
-   - Media fallback un-broken for streaming: it previously required
-     `not stream`, and the playground streams by default, so Mistral/Zai
-     were never tried on image requests. Now, when every media-capable
-     provider fails, the last resort strips image/video blocks into
-     "[image omitted]" text placeholders and answers text-only via
-     Mistral/Zai instead of 502ing.
+      [FETCH: https://example.com/article]
 """
 
 import os
@@ -68,7 +77,7 @@ from contextlib import contextmanager
 import bcrypt
 import jwt
 import requests
-from flask import Flask, request, jsonify, Response, g, stream_with_context
+from flask import Flask, request, jsonify, g
 from flask_cors import CORS
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
@@ -87,7 +96,7 @@ logger = logging.getLogger(__name__)
 # CONFIG
 # =========================================================================
 
-APP_VERSION = os.environ.get("APP_VERSION", "four-provider-2026-09-17")
+APP_VERSION = os.environ.get("APP_VERSION", "multimodel-branded-2026-09-17")
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
@@ -99,26 +108,42 @@ SESSION_HOURS = 24 * 7
 EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 DAILY_REQUEST_CAP = int(os.environ.get("DAILY_REQUEST_CAP", "3000"))
-# Raised to the Gemini context maximum. Same value for every Gemini model.
-MAX_INPUT_TOKENS = int(os.environ.get("MAX_INPUT_TOKENS", "1000000"))
+# Tightest real context window among the models actually in use (Groq's
+# 131,072) minus headroom for output. See docstring item 6.
+MAX_INPUT_TOKENS = int(os.environ.get("MAX_INPUT_TOKENS", "120000"))
+# Ceiling a client may request via max_tokens. Actual delivered output is
+# still bounded by PROVIDER_MAX_OUTPUT_TOKENS below.
+MAX_OUTPUT_TOKENS = int(os.environ.get("MAX_OUTPUT_TOKENS", "100000"))
 MAX_TOOL_ITERATIONS = 6
 MAX_SEARCH_RESULTS = 20        # hard cap on n= the model may request per search
 MAX_FETCH_CHARS = 8000         # chars of a crawled page injected per [FETCH:]
 
 FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "*")
 
-# --- Provider selection -------------------------------------------------
-# Four-provider setup (fixed 2026-09-16): Gemini, Groq, Mistral, Zai — see
-# DEFAULT_ORDER below for the fallback order and per-provider model. Every
-# request tries them in order until one succeeds. Set GEMINI_ONLY=1 env var
-# to disable the fallback chain entirely and go Gemini-exclusive.
 GEMINI_ONLY = os.environ.get("GEMINI_ONLY", "0") == "1"
 
-# Cloudinary config (for image/video uploads)
-CLOUDINARY_CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME", "ddusfl7pi")
-CLOUDINARY_API_KEY = os.environ.get("CLOUDINARY_API_KEY", "599965682593626")
-CLOUDINARY_API_SECRET = os.environ.get("CLOUDINARY_API_SECRET", "pUcb90_1jtv-rDlHXRRsfDcBK5k")
-CLOUDINARY_UPLOAD_PRESET = os.environ.get("CLOUDINARY_UPLOAD_PRESET", "")
+# Real per-provider output ceilings, so a MAX_OUTPUT_TOKENS=100000 request
+# gets clamped to what that provider can actually produce instead of
+# erroring out. Groq's is set conservatively (8192) since it now covers
+# three different models with different real ceilings and this is the
+# safe shared floor across all of them.
+PROVIDER_MAX_OUTPUT_TOKENS = {
+    "gemini": int(os.environ.get("GEMINI_MAX_OUTPUT_TOKENS", "65536")),
+    "groq": int(os.environ.get("GROQ_MAX_OUTPUT_TOKENS", "8192")),
+    "mistral": int(os.environ["MISTRAL_MAX_OUTPUT_TOKENS"]) if os.environ.get("MISTRAL_MAX_OUTPUT_TOKENS") else None,
+    "zai": int(os.environ.get("ZAI_MAX_OUTPUT_TOKENS", "32000")),
+}
+
+
+def _clamp_max_tokens(provider: str, requested):
+    """Cap a requested max_tokens to what `provider`'s models can actually
+    produce. Falls back to MAX_OUTPUT_TOKENS when nothing was requested."""
+    value = requested if requested else MAX_OUTPUT_TOKENS
+    ceiling = PROVIDER_MAX_OUTPUT_TOKENS.get(provider)
+    if ceiling:
+        value = min(value, ceiling)
+    return value
+
 
 # =========================================================================
 # DATABASE
@@ -153,32 +178,13 @@ CREATE TABLE IF NOT EXISTS usage_counters (
     tokens_out    INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (api_key_id, usage_date)
 );
-
-CREATE TABLE IF NOT EXISTS backend_status (
-    backend_name       TEXT PRIMARY KEY,
-    unavailable_until  TIMESTAMPTZ,
-    last_error         TEXT
-);
-
-CREATE TABLE IF NOT EXISTS key_status (
-    provider     TEXT NOT NULL,
-    key_hash     TEXT NOT NULL,
-    unavailable_until TIMESTAMPTZ,
-    last_error   TEXT,
-    PRIMARY KEY (provider, key_hash)
-);
 """
 
 MIGRATION_SQL = """
 ALTER TABLE usage_counters ADD COLUMN IF NOT EXISTS tokens_in INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE usage_counters ADD COLUMN IF NOT EXISTS tokens_out INTEGER NOT NULL DEFAULT 0;
-CREATE TABLE IF NOT EXISTS key_status (
-    provider     TEXT NOT NULL,
-    key_hash     TEXT NOT NULL,
-    unavailable_until TIMESTAMPTZ,
-    last_error   TEXT,
-    PRIMARY KEY (provider, key_hash)
-);
+DROP TABLE IF EXISTS key_status;
+DROP TABLE IF EXISTS backend_status;
 """
 
 
@@ -364,112 +370,22 @@ def set_rate_limit_headers(count: int):
     g.rl_reset = seconds_until_midnight_utc()
 
 
-# =========================================================================
-# BACKEND COOLDOWNS (kept for Gemini key rotation)
-# =========================================================================
-
 def _hash_key(key: str) -> str:
     import hashlib
     return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
-def mark_key_down(provider: str, key: str, error, cooldown_seconds: int = 30):
-    """RE-ENABLED 2026-09-17. Without cooldowns, a quota-dead key was retried
-    on every request: seconds of failing latency on each call, and a total
-    outage for image uploads whenever Gemini was the only eligible provider.
-    Quota errors cool down until the UTC day rolls over (free-tier daily
-    quota); everything else uses the caller's cooldown."""
-    err = str(error).lower()
-    if "quota" in err or "exceeded your current" in err:
-        cooldown_seconds = max(cooldown_seconds, seconds_until_midnight_utc())
-    key_hash = _hash_key(key)
-    with get_cursor(commit=True) as cur:
-        cur.execute(
-            """INSERT INTO key_status (provider, key_hash, unavailable_until, last_error)
-               VALUES (%s, %s, now() + %s, %s)
-               ON CONFLICT (provider, key_hash)
-               DO UPDATE SET unavailable_until = EXCLUDED.unavailable_until,
-                             last_error = EXCLUDED.last_error""",
-            (provider, key_hash, dt.timedelta(seconds=int(cooldown_seconds)), str(error)[:300]),
-        )
-
-
-def get_key_cooldown_info(provider: str, key: str):
-    key_hash = _hash_key(key)
-    with get_cursor() as cur:
-        cur.execute(
-            "SELECT unavailable_until, last_error FROM key_status WHERE provider = %s AND key_hash = %s",
-            (provider, key_hash)
-        )
-        row = cur.fetchone()
-    if not row:
-        return None, None
-    return row["unavailable_until"], row["last_error"]
-
-
-def is_key_available(provider: str, key: str) -> bool:
-    until, _prev_err = get_key_cooldown_info(provider, key)
-    if not until:
-        return True
-    if until.tzinfo is None:
-        until = until.replace(tzinfo=timezone.utc)
-    return utcnow() >= until
-
-
-def mark_backend_down(name: str, error, cooldown_seconds: int = 30):
-    pass
-
-
-def is_backend_available(name: str) -> bool:
-    return True
-
-
 # =========================================================================
-# MODEL PROVIDERS — all four active, flat fallback order (DEFAULT_ORDER)
+# MODEL PROVIDERS — internal only. Real names never leave this file except
+# to server logs. See docstring item 8.
 # =========================================================================
 
-PROVIDERS = {
-    "groq": {
-        "text": True, "tools": True, "media": True, "streaming": True,
-        "reasoning": True,
-    },
-    "mistral": {
-        "text": True, "tools": True, "media": False, "streaming": True,
-        "reasoning": False,
-    },
-    "zai": {
-        "text": True, "tools": True, "media": False, "streaming": True,
-        "reasoning": False,
-    },
-    "gemini": {
-        "text": True, "tools": False, "media": True, "streaming": True,
-        "reasoning": True,
-    },
-}
-
-# Active provider order (fixed 2026-09-16): all four providers on, flat —
-# no reasoning tiers anymore, one fixed model per provider (below). Gemini
-# stays first since it's the best-quality option when it's up; Groq second
-# (fast, big daily cap); Mistral third; Zai last (weakest model, but its
-# free tier has no request-count cap at all, so it's the fallback that never
-# actually runs dry). Override with PROVIDER_ORDER="a,b,c,d" if needed.
 DEFAULT_ORDER = [p.strip() for p in os.environ.get("PROVIDER_ORDER", "gemini,groq,mistral,zai").split(",") if p.strip()]
 
-# --- Gemini: single model, no reasoning tiers (fixed 2026-09-16) ------------
-# Sentry-1 no longer exposes low/medium/high — one model per provider,
-# always. gemini-3.7-flash: solid balance, real free-tier RPM on this
-# project (5 RPM). Still env-overridable.
-GEMINI_MODEL_DEFAULT = os.environ.get("GEMINI_MODEL", "gemini-3.7-flash")
+GEMINI_MODELS = [m.strip() for m in os.environ.get(
+    "GEMINI_MODELS", "gemini-3.7-flash,gemini-3.5-flash,gemini-3.5-flash-lite"
+).split(",") if m.strip()]
 
-
-def _gemini_model_for_request(client_body: dict) -> str:
-    """No more effort-based tiers — always the one configured Gemini model.
-    Signature kept as-is (still takes client_body) so call sites don't need
-    to change if reasoning-effort selection ever comes back."""
-    return GEMINI_MODEL_DEFAULT
-
-
-# Gemini keys — two slots, or one comma-separated GEMINI_API_KEY env var.
 GEMINI_API_KEY_ENVS = ["GEMINI_API_KEY_1", "GEMINI_API_KEY_2"]
 GEMINI_API_KEY_DEFAULTS = ["", ""]
 GEMINI_KEYS = [k.strip() for k in os.environ.get("GEMINI_API_KEY", "").split(",") if k.strip()]
@@ -480,28 +396,6 @@ if not GEMINI_KEYS:
     ]
     GEMINI_KEYS = [k for k in GEMINI_KEYS if k]
 
-# --- Remaining three providers, activated (fixed 2026-09-16) ---------------
-# One fixed model each, picked from what's actually usable on these
-# accounts/keys, not just the provider's flagship:
-#   groq    -> qwen/qwen3.6-27b
-#              (multimodal: reasoning + vision — per Groq's own deprecation
-#              page it's the recommended replacement for the shutdown
-#              llama-4-scout model, AND it keeps Groq usable as the
-#              image-fallback when Gemini quota dies, which gpt-oss-120b
-#              can't do since it's text-only. Preview tier, so worth
-#              re-checking; GROQ_MODEL=openai/gpt-oss-120b switches to the
-#              production text-only alternative)
-#   mistral -> ministral-8b-2512
-#              (mistral-large-2512 is NOT available on this account's
-#              subscription tier — confirmed via a live "model not
-#              available" error. 8B is the best model that's actually
-#              callable: better than ministral-3b on quality, and it beats
-#              mistral-small-2603 on every rate-limit number too)
-#   zai     -> glm-4.7-flash
-#              (genuinely free — $0/token, not just rate-limited-free — and
-#              has no request-count cap at all, unlike the other three. Ends
-#              up last in DEFAULT_ORDER because it's the weakest model of
-#              the four, but it's the fallback that can't run out of quota)
 OPENAI_STYLE = {
     "groq": {
         "base_url": "https://api.groq.com/openai/v1/chat/completions",
@@ -510,9 +404,10 @@ OPENAI_STYLE = {
             "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",
             "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",
         ],
-        "model": os.environ.get("GROQ_MODEL", "qwen/qwen3.6-27b"),
+        "models": [m.strip() for m in os.environ.get(
+            "GROQ_MODELS", "llama-3.3-70b-versatile,openai/gpt-oss-120b,llama-3.1-8b-instant"
+        ).split(",") if m.strip()],
         "extra_body": {},
-        "supports_reasoning": True,
     },
     "mistral": {
         "base_url": "https://api.mistral.ai/v1/chat/completions",
@@ -521,9 +416,10 @@ OPENAI_STYLE = {
             "uZIGi6VCzkcJ0i5X5mYYc0Nr1XWX21YR",
             "emd7ZA8yvckaHrGvZ9jsxKMA6y3wNSbn",
         ],
-        "model": os.environ.get("MISTRAL_MODEL", "ministral-8b-2512"),
+        "models": [m.strip() for m in os.environ.get(
+            "MISTRAL_MODELS", "ministral-8b-2512,ministral-3b-2512"
+        ).split(",") if m.strip()],
         "extra_body": {},
-        "supports_reasoning": False,
     },
     "zai": {
         "base_url": "https://api.z.ai/api/paas/v4/chat/completions",
@@ -532,21 +428,23 @@ OPENAI_STYLE = {
             "ccd29e152e6941098d7e9e1fd91f24a1.thzU8g4LLNVm6qea",
             "f6bc4aac8cfe425cadde84bba181710e.wX0Wm0I8l3YDihGy",
         ],
-        "model": os.environ.get("ZAI_MODEL", "glm-4.7-flash"),
+        "models": [m.strip() for m in os.environ.get(
+            "ZAI_MODELS", "glm-4.7-flash,glm-4.5-flash"
+        ).split(",") if m.strip()],
         "extra_body": {"thinking": {"type": "disabled"}},
-        "supports_reasoning": False,
     },
 }
 
-PASSTHROUGH_PARAMS = ("temperature", "top_p", "top_k", "max_tokens", "stop", "seed",
+PASSTHROUGH_PARAMS = ("temperature", "top_p", "top_k", "stop", "seed",
                       "presence_penalty", "frequency_penalty", "response_format")
 
 
 class Tracer:
-    """Collects a step-by-step debug trace for a single request: routing
-    decisions, provider/tool calls, and errors. Cheap no-op-ish object —
-    always create one per request and pass it down; attach .events to the
-    response so the playground can render exactly what happened."""
+    """Step-by-step trace for one request — timing and generic route labels
+    only. Real provider/model identifiers are NEVER put in here; this
+    object's .events is what the API response and the playground's Debug
+    toggle both see, so anything added here is customer-visible by design.
+    Use logger.info/error for anything that should name real backends."""
 
     def __init__(self):
         self._t0 = _time.time()
@@ -559,7 +457,6 @@ class Tracer:
             "message": message,
         }
         if data:
-            # keep it JSON-safe and small
             safe = {}
             for k, v in data.items():
                 try:
@@ -576,90 +473,6 @@ class ProviderError(Exception):
     pass
 
 
-def has_media(messages: list) -> bool:
-    for m in messages:
-        content = m.get("content")
-        if isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and block.get("type") in ("image_url", "input_audio", "audio_url", "video_url"):
-                    return True
-    return False
-
-
-def _transcribe_audio_bytes(audio_bytes: bytes, filename: str = "audio.webm") -> str:
-    """Voice notes are transcribed via Groq Whisper. NOTE: with GEMINI_ONLY=1
-    this still runs (it's transcription, not chat) — if no Groq key is valid
-    it raises and the caller falls back gracefully."""
-    keys = [os.environ.get(e, d) for e, d in zip(OPENAI_STYLE["groq"]["api_key_envs"], OPENAI_STYLE["groq"]["api_key_defaults"])]
-    keys = [k for k in keys if k]
-    if not keys:
-        raise ProviderError("audio transcription: no Groq API key configured")
-
-    last_error = None
-    for key in keys:
-        try:
-            resp = requests.post(
-                "https://api.groq.com/openai/v1/audio/transcriptions",
-                headers={"Authorization": f"Bearer {key}"},
-                files={"file": (filename, audio_bytes)},
-                data={"model": "whisper-large-v3-turbo"},
-                timeout=60,
-            )
-            if resp.status_code >= 400:
-                last_error = f"groq whisper: {resp.status_code} — {_error_detail(resp)}"
-                logger.error(f"audio transcription failed: {last_error}")
-                continue
-            text = resp.json().get("text", "").strip()
-            logger.info(f"audio transcription succeeded, {len(text)} chars")
-            return text
-        except requests.RequestException as e:
-            last_error = f"groq whisper: {e}"
-            logger.error(f"audio transcription request failed: {e}")
-            continue
-    raise ProviderError(last_error or "audio transcription failed on all keys")
-
-
-def _transcribe_audio_blocks(messages: list) -> list:
-    out = []
-    for m in messages:
-        content = m.get("content")
-        if not isinstance(content, list):
-            out.append(m)
-            continue
-
-        new_content = []
-        changed = False
-        for block in content:
-            btype = block.get("type") if isinstance(block, dict) else None
-            if btype not in ("audio_url", "input_audio"):
-                new_content.append(block)
-                continue
-
-            changed = True
-            try:
-                if btype == "audio_url":
-                    url = (block.get("audio_url") or {}).get("url")
-                    audio_resp = requests.get(url, timeout=30)
-                    audio_resp.raise_for_status()
-                    audio_bytes = audio_resp.content
-                else:
-                    import base64
-                    b64_data = (block.get("input_audio") or {}).get("data", "")
-                    audio_bytes = base64.b64decode(b64_data)
-
-                transcript = _transcribe_audio_bytes(audio_bytes)
-                new_content.append({
-                    "type": "text",
-                    "text": f"[Voice message transcript]: {transcript}" if transcript else "[Voice message was empty or inaudible]"
-                })
-            except (requests.RequestException, ProviderError, ValueError) as e:
-                logger.error(f"failed to transcribe audio block: {e}")
-                new_content.append({"type": "text", "text": f"[Voice message could not be transcribed: {e}]"})
-
-        out.append({**m, "content": new_content if changed else content})
-    return out
-
-
 def estimate_tokens(messages) -> int:
     return max(1, len(json.dumps(messages)) // 4)
 
@@ -668,17 +481,6 @@ def _forward_sampling_params(body: dict, client_body: dict):
     for p in PASSTHROUGH_PARAMS:
         if p in client_body and client_body[p] is not None:
             body[p] = client_body[p]
-
-
-def _get_reasoning_params(provider: str, client_body: dict) -> dict:
-    """Reasoning params for providers that support them (disconnected providers kept for completeness)."""
-    reasoning = client_body.get("reasoning") or {}
-    if not reasoning.get("enabled"):
-        return {}
-    effort = reasoning.get("effort", "medium")
-    if provider == "groq":
-        return {"reasoning_effort": effort}
-    return {}
 
 
 def _error_detail(resp) -> str:
@@ -696,171 +498,87 @@ def _error_detail(resp) -> str:
         return (resp.text or "")[:300]
 
 
-def _call_openai_style(provider: str, messages: list, client_body: dict, tools, timeout: int, stream: bool = False):
-    """Groq / Mistral / Zai leg of the fallback chain — see DEFAULT_ORDER.
-    Each has exactly one fixed model (OPENAI_STYLE[provider]["model"])."""
+def _call_openai_style(provider: str, messages: list, client_body: dict, tools, timeout: int):
+    """Groq / Mistral / Zai leg. Tries every model in cfg['models'] in
+    order; for each model, every configured key. A 404 skips straight to
+    the next MODEL (retrying a dead model ID with a different key wastes a
+    call); everything else tries the next key first, then the next model.
+    All logging here uses the real provider/model name — server-side only,
+    never returned to the caller (see ProviderError raised at the bottom,
+    and how call_model() below converts it before it reaches a response)."""
     cfg = OPENAI_STYLE[provider]
     keys = [os.environ.get(e, d) for e, d in zip(cfg["api_key_envs"], cfg["api_key_defaults"])]
     keys = [k for k in keys if k]
     if not keys:
         raise ProviderError(f"{provider}: no API keys configured")
 
-    body = {"model": cfg["model"], "messages": messages}
-    _forward_sampling_params(body, client_body or {})
-
-    if cfg.get("supports_reasoning") and not tools:
-        body.update(_get_reasoning_params(provider, client_body or {}))
-
-    if tools:
-        body["tools"] = tools
-    if cfg.get("extra_body"):
-        body.update(cfg["extra_body"])
-    if stream:
-        body["stream"] = True
-
     last_error = None
-    for key in keys:
-        if not is_key_available(provider, key):
-            until, prev_err = get_key_cooldown_info(provider, key)
-            last_error = f"{provider}: key {_hash_key(key)} still cooling down until {until} — last error: {prev_err}"
-            logger.info(f"{provider}: key {_hash_key(key)} cooling down, skipping")
+    for model_id in cfg["models"]:
+        body = {"model": model_id, "messages": messages}
+        _forward_sampling_params(body, client_body or {})
+        body["max_tokens"] = _clamp_max_tokens(provider, (client_body or {}).get("max_tokens"))
+        if tools:
+            body["tools"] = tools
+        if cfg.get("extra_body"):
+            body.update(cfg["extra_body"])
+
+        model_dead = False
+        for key in keys:
+            try:
+                resp = requests.post(
+                    cfg["base_url"],
+                    headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                    json=body,
+                    timeout=timeout,
+                )
+
+                if resp.status_code == 404:
+                    last_error = f"{provider}/{model_id}: 404 — {_error_detail(resp)}"
+                    logger.warning(f"{provider}: model {model_id} unavailable, moving to next model")
+                    model_dead = True
+                    break
+                if resp.status_code == 429:
+                    last_error = f"{provider}/{model_id}: rate limited on key {_hash_key(key)} — {_error_detail(resp)}"
+                    logger.info(last_error)
+                    continue
+                if resp.status_code in (401, 403):
+                    last_error = f"{provider}/{model_id}: key {_hash_key(key)} rejected with {resp.status_code} — {_error_detail(resp)}"
+                    logger.error(last_error)
+                    continue
+                if resp.status_code >= 500:
+                    last_error = f"{provider}/{model_id}: server error {resp.status_code} — {_error_detail(resp)}"
+                    logger.warning(last_error)
+                    continue
+                if resp.status_code >= 400:
+                    last_error = f"{provider}/{model_id}: {resp.status_code} — {_error_detail(resp)}"
+                    logger.error(last_error)
+                    continue
+
+                data = resp.json()
+                choice = data["choices"][0]["message"]
+                usage = data.get("usage", {})
+                logger.info(f"{provider}/{model_id}: success, key {_hash_key(key)}")
+                return {
+                    "content": choice.get("content"),
+                    "tool_calls": choice.get("tool_calls"),
+                    "provider": provider,
+                    "model": model_id,
+                    "usage": usage,
+                }
+            except requests.RequestException as e:
+                last_error = f"{provider}/{model_id}: {e}"
+                logger.error(last_error)
+                continue
+
+        if model_dead:
             continue
 
-        try:
-            start_time = dt.datetime.now()
-            resp = requests.post(
-                cfg["base_url"],
-                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                json=body,
-                timeout=timeout,
-                stream=stream,
-            )
-            latency = (dt.datetime.now() - start_time).total_seconds() * 1000
-
-            if resp.status_code == 429:
-                last_error = f"{provider}: rate limited on key {_hash_key(key)} — {_error_detail(resp)}"
-                mark_key_down(provider, key, last_error, cooldown_seconds=60)
-                continue
-            if resp.status_code in (401, 403):
-                last_error = f"{provider}: key {_hash_key(key)} rejected with {resp.status_code} — {_error_detail(resp)}"
-                mark_key_down(provider, key, last_error, cooldown_seconds=6 * 3600)
-                continue
-            if resp.status_code >= 500:
-                last_error = f"{provider}: server error {resp.status_code} — {_error_detail(resp)}"
-                mark_key_down(provider, key, last_error, cooldown_seconds=30)
-                continue
-            if resp.status_code >= 400:
-                last_error = f"{provider}: {resp.status_code} — {_error_detail(resp)}"
-                mark_key_down(provider, key, last_error, cooldown_seconds=5)
-                continue
-
-            if stream:
-                return {"stream": resp.iter_lines(), "provider": provider, "key_hash": _hash_key(key)}
-
-            data = resp.json()
-            choice = data["choices"][0]["message"]
-            usage = data.get("usage", {})
-            return {
-                "content": choice.get("content"),
-                "tool_calls": choice.get("tool_calls"),
-                "provider": provider,
-                "usage": usage,
-            }
-        except requests.RequestException as e:
-            last_error = f"{provider}: {e}"
-            mark_key_down(provider, key, last_error, cooldown_seconds=30)
-            continue
-
-    raise ProviderError(last_error or f"{provider}: all keys failed")
-
-
-def _fetch_media_as_base64(url: str, max_size_mb: int = 5) -> tuple:
-    try:
-        resp = requests.get(url, timeout=30, stream=True)
-        resp.raise_for_status()
-        content_length = resp.headers.get('content-length')
-        if content_length and int(content_length) > max_size_mb * 1024 * 1024:
-            raise ProviderError(f"Media too large: {int(content_length) / 1024 / 1024:.1f}MB > {max_size_mb}MB")
-
-        chunks = []
-        total_size = 0
-        for chunk in resp.iter_content(chunk_size=8192):
-            chunks.append(chunk)
-            total_size += len(chunk)
-            if total_size > max_size_mb * 1024 * 1024:
-                raise ProviderError(f"Media too large: >{max_size_mb}MB")
-
-        data = b''.join(chunks)
-        import base64
-        b64 = base64.b64encode(data).decode('utf-8')
-
-        content_type = resp.headers.get('content-type', '').split(';')[0]
-        if not content_type:
-            ext = url.split('.')[-1].lower().split('?')[0]
-            mime_map = {
-                'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png',
-                'gif': 'image/gif', 'webp': 'image/webp', 'mp4': 'video/mp4',
-                'webm': 'video/webm', 'mov': 'video/quicktime'
-            }
-            content_type = mime_map.get(ext, 'application/octet-stream')
-
-        return b64, content_type
-    except requests.RequestException as e:
-        raise ProviderError(f"Failed to fetch media: {e}")
-
-
-def _strip_media_blocks(messages: list) -> list:
-    """Replace image/video/file blocks with a text placeholder so a text-only
-    provider (Mistral, Zai) can still answer the rest of the request instead
-    of the whole call 502ing. Audio is already transcribed to text earlier
-    in the pipeline, so only visual media reaches this point."""
-    out = []
-    for m in messages:
-        content = m.get("content")
-        if not isinstance(content, list):
-            out.append(m)
-            continue
-        blocks = []
-        for block in content:
-            btype = block.get("type") if isinstance(block, dict) else None
-            if btype in ("image_url", "video_url", "audio_url", "input_audio", "file_url"):
-                kind = btype.replace("_url", "").replace("input_audio", "audio")
-                blocks.append({
-                    "type": "text",
-                    "text": f"[{kind} was attached but omitted — this fallback provider cannot process media]",
-                })
-            else:
-                blocks.append(block)
-        out.append({**m, "content": blocks})
-    return out
-
-
-def _media_messages_to_data_urls(messages: list) -> list:
-    converted = []
-    for m in messages:
-        content = m.get("content")
-        if not isinstance(content, list):
-            converted.append(m)
-            continue
-        blocks = []
-        changed = False
-        for block in content:
-            b = dict(block)
-            if b.get("type") == "image_url":
-                url = (b.get("image_url") or {}).get("url", "")
-                if url.startswith("https://"):
-                    try:
-                        b64, mime = _fetch_media_as_base64(url, max_size_mb=5)
-                        b["image_url"] = {"url": f"data:{mime};base64,{b64}"}
-                        changed = True
-                    except ProviderError as e:
-                        logger.warning(f"media fallback: could not fetch image ({url[:60]}...): {e}")
-            blocks.append(b)
-        converted.append({**m, "content": blocks} if changed else m)
-    return converted
+    raise ProviderError(last_error or f"{provider}: all models/keys failed")
 
 
 def _messages_to_gemini_contents(messages: list):
+    """Text-only. A legacy content-list shape is accepted defensively (text
+    blocks concatenated) so an older client doesn't hard-fail."""
     system_texts = [
         m["content"] for m in messages
         if m["role"] == "system" and isinstance(m["content"], str)
@@ -873,373 +591,139 @@ def _messages_to_gemini_contents(messages: list):
             continue
         role = "model" if m["role"] == "assistant" else "user"
         content = m["content"]
-        parts = []
 
-        if isinstance(content, str):
-            text = prefix + content if prefix and role == "user" else content
-            parts.append({"text": text})
+        if isinstance(content, list):
+            text = "\n".join(
+                block.get("text", "") for block in content
+                if isinstance(block, dict) and block.get("type") == "text"
+            )
+        else:
+            text = content or ""
+
+        if prefix and role == "user":
+            text = prefix + text
             prefix = ""
-        elif isinstance(content, list):
-            first_text_done = False
-            for block in content:
-                if block.get("type") == "text":
-                    text = block.get("text", "")
-                    if prefix and role == "user" and not first_text_done:
-                        text = prefix + text
-                        prefix = ""
-                    first_text_done = True
-                    parts.append({"text": text})
-                elif block.get("type") == "image_url":
-                    url = block.get("image_url", {}).get("url", "")
-                    if url.startswith("data:"):
-                        mime, _, b64data = url.partition(";base64,")
-                        parts.append({"inline_data": {"mime_type": mime.replace("data:", ""), "data": b64data}})
-                    elif url.startswith("https://"):
-                        try:
-                            b64, mime = _fetch_media_as_base64(url, max_size_mb=5)
-                            parts.append({"inline_data": {"mime_type": mime, "data": b64}})
-                        except ProviderError as e:
-                            logger.warning(f"Failed to fetch image: {e}")
-                            parts.append({"text": f"[Image unavailable: {str(e)}]"})
-                elif block.get("type") == "video_url":
-                    url = block.get("video_url", {}).get("url", "")
-                    if url.startswith("https://"):
-                        try:
-                            b64, mime = _fetch_media_as_base64(url, max_size_mb=50)
-                            parts.append({"inline_data": {"mime_type": mime, "data": b64}})
-                        except ProviderError as e:
-                            logger.warning(f"Failed to fetch video: {e}")
-                            parts.append({"text": f"[Video unavailable: {str(e)}]"})
-                elif block.get("type") == "file_url":
-                    url = block.get("file_url", {}).get("url", "")
-                    if url.startswith("https://"):
-                        try:
-                            text_content = _extract_text_from_url(url)
-                            if prefix and role == "user" and not first_text_done:
-                                text_content = prefix + text_content
-                                prefix = ""
-                            first_text_done = True
-                            parts.append({"text": text_content})
-                        except Exception as e:
-                            logger.warning(f"Failed to extract file text: {e}")
-                            parts.append({"text": f"[File content unavailable: {str(e)}]"})
 
-        contents.append({"role": role, "parts": parts})
+        contents.append({"role": role, "parts": [{"text": text}]})
 
     return contents
 
 
-def _extract_text_from_url(url: str) -> str:
-    try:
-        resp = requests.get(url, timeout=30)
-        resp.raise_for_status()
-        content_type = resp.headers.get('content-type', '').lower()
-        ext = url.split('.')[-1].lower().split('?')[0]
-
-        if 'pdf' in content_type or ext == 'pdf':
-            return _extract_pdf_text(resp.content)
-        elif 'word' in content_type or ext in ('docx', 'doc'):
-            return _extract_docx_text(resp.content)
-        elif 'text' in content_type or ext in ('txt', 'md', 'csv'):
-            return resp.text[:100000]
-        else:
-            try:
-                return resp.text[:100000]
-            except Exception:
-                return "[Unsupported file type]"
-    except requests.RequestException as e:
-        raise ProviderError(f"Failed to fetch file: {e}")
-
-
-def _extract_pdf_text(content: bytes) -> str:
-    try:
-        import fitz
-        doc = fitz.open(stream=content, filetype="pdf")
-        text = ""
-        for page in doc:
-            text += page.get_text()
-            if len(text) > 100000:
-                text += "\n\n[content truncated]"
-                break
-        doc.close()
-        return text
-    except ImportError:
-        pass
-
-    try:
-        from pdfminer.high_level import extract_text
-        import io
-        text = extract_text(io.BytesIO(content))
-        return text[:100000]
-    except ImportError:
-        pass
-
-    try:
-        import subprocess
-        import tempfile
-        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as f:
-            f.write(content)
-            tmp_path = f.name
-
-        result = subprocess.run(['pdftotext', tmp_path, '-'], capture_output=True, text=True, timeout=30)
-        os.unlink(tmp_path)
-
-        if result.returncode == 0:
-            return result.stdout[:100000]
-    except (subprocess.SubprocessError, FileNotFoundError):
-        pass
-
-    return "[PDF text extraction not available. Install PyMuPDF or pdfminer.six, or ensure pdftotext is installed]"
-
-
-def _extract_docx_text(content: bytes) -> str:
-    try:
-        import docx
-        import io
-        doc = docx.Document(io.BytesIO(content))
-        text = "\n".join([para.text for para in doc.paragraphs])
-        return text[:100000]
-    except ImportError:
-        return "[DOCX support not available. Install python-docx or convert to PDF/TXT]"
-
-
-def _call_gemini(messages: list, timeout: int, stream: bool = False, model: str = None, client_body: dict = None):
-    """Gemini leg of the fallback chain (DEFAULT_ORDER[0])."""
-    model = model or GEMINI_MODEL_DEFAULT
+def _call_gemini(messages: list, timeout: int, client_body: dict = None):
+    """Gemini leg. Tries every model in GEMINI_MODELS in order, each across
+    every configured key — same dead-model-skips-remaining-keys logic as
+    _call_openai_style. All logging uses the real model name, server-side
+    only."""
     keys = GEMINI_KEYS
     if not keys:
         raise ProviderError("gemini: no API keys configured (set GEMINI_API_KEY or GEMINI_API_KEY_1/2)")
 
-    body = {"contents": _messages_to_gemini_contents(messages)}
-    # Sampling controls (temperature / top_p / top_k / max_tokens) forwarded
-    # from the client request — same passthrough spirit as PASSTHROUGH_PARAMS
-    # for the openai-style providers. Without this the playground sliders
-    # were silently ignored in the gemini-only path.
-    gen_cfg = {}
-    if stream:
-        gen_cfg["maxOutputTokens"] = 8192
+    contents = _messages_to_gemini_contents(messages)
+
+    gen_cfg = {"maxOutputTokens": _clamp_max_tokens("gemini", (client_body or {}).get("max_tokens"))}
     if client_body:
         for src, dst in (("temperature", "temperature"), ("top_p", "topP"), ("top_k", "topK")):
             v = client_body.get(src)
             if v is not None:
                 gen_cfg[dst] = v
-        mt = client_body.get("max_tokens")
-        if mt:
-            gen_cfg["maxOutputTokens"] = mt
-    if gen_cfg:
-        body["generationConfig"] = gen_cfg
+
+    body = {"contents": contents, "generationConfig": gen_cfg}
 
     last_error = None
-    for key in keys:
-        if not is_key_available("gemini", key):
-            until, prev_err = get_key_cooldown_info("gemini", key)
-            last_error = f"gemini: key {_hash_key(key)} still cooling down until {until} — last error: {prev_err}"
-            logger.info(f"gemini: key {_hash_key(key)} cooling down, skipping")
-            continue
+    for model in GEMINI_MODELS:
+        model_dead = False
+        for key in keys:
+            try:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+                resp = requests.post(url, json=body, timeout=timeout)
 
-        try:
-            start_time = dt.datetime.now()
-            url = (
-                f"https://generativelanguage.googleapis.com/v1beta/models/"
-                f"{model}:{'streamGenerateContent' if stream else 'generateContent'}?key={key}"
-            )
-            if stream:
-                url += "&alt=sse"
+                if resp.status_code == 404:
+                    last_error = f"gemini/{model}: 404 — {_error_detail(resp)}"
+                    logger.warning(f"gemini: model {model} unavailable, moving to next model")
+                    model_dead = True
+                    break
+                if resp.status_code == 429:
+                    last_error = f"gemini/{model}: rate limited on key {_hash_key(key)} — {_error_detail(resp)}"
+                    logger.warning(last_error)
+                    continue
+                if resp.status_code in (401, 403):
+                    last_error = f"gemini/{model}: key {_hash_key(key)} rejected with {resp.status_code} — {_error_detail(resp)}"
+                    logger.error(last_error)
+                    continue
+                if resp.status_code >= 500:
+                    last_error = f"gemini/{model}: server error {resp.status_code} — {_error_detail(resp)}"
+                    logger.warning(last_error)
+                    continue
+                if resp.status_code >= 400:
+                    last_error = f"gemini/{model}: {resp.status_code} — {_error_detail(resp)}"
+                    logger.error(last_error)
+                    continue
 
-            resp = requests.post(url, json=body, timeout=timeout, stream=stream)
-            latency = (dt.datetime.now() - start_time).total_seconds() * 1000
+                data = resp.json()
+                candidates = data.get("candidates") or []
+                if not candidates:
+                    block_reason = (data.get("promptFeedback") or {}).get("blockReason")
+                    last_error = f"gemini/{model}: no candidates returned (blockReason={block_reason})"
+                    logger.error(last_error)
+                    continue
 
-            if resp.status_code == 429:
-                last_error = f"gemini: rate limited on key {_hash_key(key)} — {_error_detail(resp)}"
-                mark_key_down("gemini", key, last_error, cooldown_seconds=60)
-                logger.warning(f"gemini: 429 on key {_hash_key(key)}")
-                continue
-            if resp.status_code in (401, 403):
-                last_error = f"gemini: key {_hash_key(key)} rejected with {resp.status_code} — {_error_detail(resp)}"
-                mark_key_down("gemini", key, last_error, cooldown_seconds=6 * 3600)
-                logger.error(f"gemini: {resp.status_code} on key {_hash_key(key)} -- {_error_detail(resp)}")
-                continue
-            if resp.status_code >= 500:
-                last_error = f"gemini: server error {resp.status_code} — {_error_detail(resp)}"
-                mark_key_down("gemini", key, last_error, cooldown_seconds=30)
-                logger.warning(f"gemini: {resp.status_code} on key {_hash_key(key)}")
-                continue
-            if resp.status_code >= 400:
-                last_error = f"gemini: {resp.status_code} — {_error_detail(resp)}"
-                mark_key_down("gemini", key, last_error, cooldown_seconds=5)
-                logger.error(f"gemini: {resp.status_code} on key {_hash_key(key)} -- {_error_detail(resp)}")
-                continue
+                candidate = candidates[0]
+                parts = ((candidate.get("content") or {}).get("parts")) or []
+                text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
 
-            if stream:
-                logger.info(f"gemini({model}): streaming started, key {_hash_key(key)}, latency {latency:.0f}ms")
-                return {
-                    "stream": resp.iter_lines(),
-                    "provider": "gemini",
-                    "model": model,
-                    "key_hash": _hash_key(key),
-                }
+                if not text:
+                    finish_reason = candidate.get("finishReason")
+                    last_error = f"gemini/{model}: empty response (finishReason={finish_reason})"
+                    logger.error(last_error)
+                    continue
 
-            data = resp.json()
-
-            candidates = data.get("candidates") or []
-            if not candidates:
-                block_reason = (data.get("promptFeedback") or {}).get("blockReason")
-                last_error = f"gemini: no candidates returned (blockReason={block_reason})"
-                mark_key_down("gemini", key, last_error, cooldown_seconds=5)
+                usage = data.get("usageMetadata", {})
+                logger.info(f"gemini/{model}: success, key {_hash_key(key)}")
+                return {"content": text, "tool_calls": None, "provider": "gemini", "model": model, "usage": usage}
+            except requests.RequestException as e:
+                last_error = f"gemini/{model}: {e}"
                 logger.error(last_error)
                 continue
 
-            candidate = candidates[0]
-            parts = ((candidate.get("content") or {}).get("parts")) or []
-            text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
-
-            if not text:
-                finish_reason = candidate.get("finishReason")
-                last_error = f"gemini: empty response (finishReason={finish_reason})"
-                mark_key_down("gemini", key, last_error, cooldown_seconds=5)
-                logger.error(last_error)
-                continue
-
-            usage = data.get("usageMetadata", {})
-            logger.info(f"gemini({model}): success, key {_hash_key(key)}, latency {latency:.0f}ms, tokens {usage.get('promptTokenCount', '?')}/{usage.get('candidatesTokenCount', '?')}")
-
-            return {"content": text, "tool_calls": None, "provider": "gemini", "model": model, "usage": usage}
-        except requests.RequestException as e:
-            last_error = f"gemini: {e}"
-            mark_key_down("gemini", key, last_error, cooldown_seconds=30)
-            logger.error(f"gemini: error on key {_hash_key(key)}: {e}")
+        if model_dead:
             continue
 
-    # (Old free-tier "pro model" fallback removed 2026-09-16 — no reasoning
-    # tiers anymore, so there's only ever one Gemini model in play; nothing
-    # to fall back *to* within Gemini itself. The real fallback now is the
-    # next provider in DEFAULT_ORDER, handled by call_model() below.)
-    raise ProviderError(last_error or "gemini: all keys failed")
+    raise ProviderError(last_error or "gemini: all models/keys failed")
 
 
-def _rank_providers(messages: list, tools, stream: bool, client_body: dict) -> list:
-    """Capability ranking — only used when GEMINI_ONLY=0."""
-    needs_media = has_media(messages)
-    needs_tools = bool(tools)
-    wants_reasoning = bool(((client_body or {}).get("reasoning") or {}).get("enabled"))
+def call_model(messages: list, client_body: dict = None, tools=None, timeout: int = 30, order=None, tracer: "Tracer" = None):
+    """Route to a provider. Tries each in order (DEFAULT_ORDER, or `order`)
+    until one succeeds — each provider tries every model it's configured
+    with, across every key, before giving up. No cooldowns: a dead
+    key/model/provider is skipped this request and tried fresh next time.
 
-    candidates = []
-    for pos, name in enumerate(DEFAULT_ORDER):
-        caps = PROVIDERS[name]
-        if not caps["text"]:
-            continue
-        score = pos
-
-        use_tools = needs_tools
-        msgs = messages
-
-        if needs_media:
-            if caps["media"]:
-                score -= 5
-            elif caps["text"]:
-                score += 10
-            else:
-                continue
-
-        if needs_tools:
-            if caps["tools"]:
-                pass
-            else:
-                score += 10
-                use_tools = False
-
-        if wants_reasoning and caps.get("reasoning"):
-            score -= 1
-
-        candidates.append((score, pos, name, msgs, use_tools))
-
-    candidates.sort(key=lambda c: (c[0], c[1]))
-    return candidates
-
-
-def call_model(messages: list, client_body: dict = None, tools=None, timeout: int = 30, order=None, stream: bool = False):
-    """Route to a provider. Default (GEMINI_ONLY=0): try each provider in
-    DEFAULT_ORDER (gemini, groq, mistral, zai) until one succeeds — each
-    with its single fixed model, no reasoning-tier model swapping. Set
-    GEMINI_ONLY=1 to disable the fallback chain and go Gemini-exclusive."""
+    Adds a GENERIC (no real names) route event to `tracer` per attempt, so
+    the customer-visible debug trace shows that fallback happened without
+    revealing what it fell back to. The real detail goes to logger only."""
     errors = []
+    names = ["gemini"] if GEMINI_ONLY else (order if order is not None else DEFAULT_ORDER)
 
-    if GEMINI_ONLY:
-        names = ["gemini"]
-    elif order is not None:
-        names = order
-    else:
-        # Deterministic: always DEFAULT_ORDER's order (gemini, groq, mistral,
-        # zai). No more falling through to _rank_providers(), which used to
-        # put groq ahead of gemini by default — that's what silently broke
-        # "Gemini first" before this fix.
-        names = DEFAULT_ORDER
-
-    if names:
-        needs_media = has_media(messages)
-        needs_tools = bool(tools)
-        ranked = []
-        for name in names:
-            caps = PROVIDERS.get(name)
-            if not caps or not caps["text"]:
-                continue
-            if needs_media and not caps["media"]:
-                continue
-            if needs_tools and not caps["tools"]:
-                continue
-            ranked.append((0, 0, name, messages, bool(tools)))
-    else:
-        ranked = _rank_providers(messages, tools, stream, client_body)
-
-    model = _gemini_model_for_request(client_body)
-
-    for score, pos, name, msgs, use_tools in ranked:
-        if score >= 2:
-            continue
+    for i, name in enumerate(names):
+        if tracer:
+            tracer.add("route_attempt", f"trying route {i + 1} of {len(names)}")
         try:
             if name == "gemini":
-                return _call_gemini(msgs, timeout, stream=stream, model=model, client_body=client_body)
-            return _call_openai_style(name, msgs, client_body, use_tools, timeout, stream=stream)
+                result = _call_gemini(messages, timeout, client_body=client_body)
+            else:
+                result = _call_openai_style(name, messages, client_body, tools, timeout)
+            if tracer:
+                tracer.add("route_ok", f"route {i + 1} answered")
+            return result
         except (ProviderError, requests.RequestException) as e:
             errors.append(f"{name}: {e}")
-            logger.error(f"Provider {name} failed: {e}")
+            logger.error(f"Provider {name} failed, rerouting: {e}")
+            if tracer:
+                tracer.add("route_failed", f"route {i + 1} failed, rerouting")
             continue
 
-    if not GEMINI_ONLY:
-        if has_media(messages):
-            # Last resort when every media-capable provider (gemini, groq)
-            # failed — including while STREAMING, which was previously
-            # excluded here and silently broke this whole fallback for the
-            # playground (it streams by default). Text-only providers get
-            # the media stripped into "[image omitted]" placeholders so the
-            # user still gets an answer instead of a 502.
-            for score, pos, name, msgs, use_tools in ranked:
-                if PROVIDERS[name]["media"]:
-                    continue
-                try:
-                    stripped = _strip_media_blocks(messages)
-                    logger.warning(f"all media-capable providers unavailable; answering via {name} with media stripped")
-                    return _call_openai_style(name, stripped, client_body, use_tools, timeout, stream=stream)
-                except (ProviderError, requests.RequestException) as e:
-                    errors.append(f"{name} (media-stripped fallback): {e}")
-                    logger.error(f"Provider {name} media-stripped fallback failed: {e}")
-                    continue
-
-        if tools:
-            for score, pos, name, msgs, use_tools in ranked:
-                if use_tools:
-                    continue
-                try:
-                    logger.warning(f"all tool-capable providers unavailable; trying {name} without tools")
-                    if name == "gemini":
-                        return _call_gemini(messages, timeout, stream=stream, model=model, client_body=client_body)
-                    return _call_openai_style(name, messages, client_body, None, timeout, stream=stream)
-                except (ProviderError, requests.RequestException) as e:
-                    errors.append(f"{name} (no-tools fallback): {e}")
-                    logger.error(f"Provider {name} no-tools fallback failed: {e}")
-                    continue
-
-    raise ProviderError("All providers/keys failed -> " + " | ".join(errors))
+    # Full detail (real provider/model names) goes to the server log only.
+    logger.error("All backends failed -> " + " | ".join(errors))
+    raise ProviderError("Sentry-1 is temporarily unable to process this request. Please try again in a moment.")
 
 
 # =========================================================================
@@ -1261,7 +745,7 @@ def validate_and_fix_json(content: str, response_format: dict, messages: list, c
 
     retry_body = dict(client_body or {})
     retry_body["temperature"] = 0
-    retry_body["_json_retry"] = True  # signal to build the stricter system prompt
+    retry_body["_json_retry"] = True
 
     retry_messages = list(messages)
     retry_messages.insert(0, {
@@ -1289,17 +773,9 @@ TAVILY_KEYS = [
 ]
 
 
-def _pick_tavily_key():
-    for key in TAVILY_KEYS:
-        if key:
-            return key
-    return None
-
-
 def web_search(query: str, max_results: int = 5, search_depth: str = "basic",
                include_images: bool = True):
-    """Tavily search with images. Returns {"results": [...], "images": [...]}.
-    search_depth: "basic" | "advanced" (advanced crawls more, costs more)."""
+    """Tavily search with images. Returns {"results": [...], "images": [...]}."""
     max_results = max(1, min(int(max_results), MAX_SEARCH_RESULTS))
     last_error = None
     for key in TAVILY_KEYS:
@@ -1365,14 +841,11 @@ def fetch_page_text(url: str, max_chars: int = MAX_FETCH_CHARS) -> tuple:
     return title, text[:max_chars]
 
 
-TOOL_IMPLEMENTATIONS = {"web_search": web_search, "fetch_page": fetch_page_text}
-
 SEARCH_TAG_RE = re.compile(r"\[SEARCH:\s*(.+?)\]", re.IGNORECASE | re.DOTALL)
 FETCH_TAG_RE = re.compile(r"\[FETCH:\s*(https?://[^\s\]]+)\]", re.IGNORECASE)
 
 
 def _parse_search_tag(raw: str):
-    """[SEARCH: query | n=10 | depth=advanced | images=no] -> (query, opts)."""
     parts = [p.strip() for p in raw.split("|")]
     query = parts[0]
     opts = {}
@@ -1411,8 +884,6 @@ def _format_search_context(query, search_data) -> str:
 
 
 def _inject_tavily_results(messages: list, query: str, max_results: int = 5) -> tuple:
-    """Provider-degraded fallback: search the user's question, inject context.
-    Returns (messages, images)."""
     try:
         search_data = web_search(query, max_results=max_results)
         if not search_data.get("results"):
@@ -1426,48 +897,24 @@ def _inject_tavily_results(messages: list, query: str, max_results: int = 5) -> 
         return messages, []
 
 
-def run_agentic_completion(messages: list, client_body: dict = None, web_search_enabled: bool = True, stream: bool = False, tracer: "Tracer" = None):
+def run_agentic_completion(messages: list, client_body: dict = None, web_search_enabled: bool = True, tracer: "Tracer" = None):
     """Model -> [SEARCH: ...] / [FETCH: ...] tags -> real results injected ->
-    model again, until no tags appear or MAX_TOOL_ITERATIONS is hit.
-
-    The Gemini model controls Tavily directly through tags:
-      [SEARCH: your query]                          basic search, ~5 results + images
-      [SEARCH: your query | n=10]                   up to 20 results
-      [SEARCH: your query | depth=advanced]         deeper crawl search
-      [SEARCH: your query | images=no]              text-only results
-      [FETCH: https://example.com/page]             crawl that exact page
-    """
+    model again, until no tags appear or MAX_TOOL_ITERATIONS is hit."""
     working = list(messages)
     degraded = False
     collected_images = []
     default_max_results = int(((client_body or {}).get("web_search") or {}).get("max_results") or 5)
     tr = tracer or Tracer()
 
-    tr.add("routing", "agentic loop starting", web_search_enabled=web_search_enabled,
-           stream=stream, max_iterations=MAX_TOOL_ITERATIONS)
-
     for iteration in range(MAX_TOOL_ITERATIONS):
-        is_final = (iteration == MAX_TOOL_ITERATIONS - 1)
-        should_stream = stream and is_final and not degraded
-
-        tr.add("model_call", f"iteration {iteration}: calling model", iteration=iteration,
-               should_stream=should_stream, message_count=len(working))
-        t_call = _time.time()
         try:
-            result = call_model(working, client_body=client_body, tools=None, stream=should_stream)
-            tr.add("model_call_ok", f"iteration {iteration}: model responded",
-                   iteration=iteration, provider=result.get("provider"), model=result.get("model"),
-                   latency_ms=int((_time.time() - t_call) * 1000))
-        except ProviderError as e:
-            tr.add("model_call_error", f"iteration {iteration}: provider call failed: {e}",
-                   iteration=iteration, error=str(e),
-                   latency_ms=int((_time.time() - t_call) * 1000))
+            result = call_model(working, client_body=client_body, tools=None, tracer=tr)
+        except ProviderError:
             if not web_search_enabled or degraded:
-                tr.add("error", "no fallback available, raising", iteration=iteration)
                 raise
-            logger.warning(f"Model call failed ({e}); falling back to Tavily pre-search")
+            logger.warning("Model call failed; falling back to Tavily pre-search")
             degraded = True
-            tr.add("fallback", "falling back to Tavily pre-search (degraded mode)", iteration=iteration)
+            tr.add("fallback", "answering from a live search instead")
 
             last_user = ""
             for m in reversed(working):
@@ -1477,51 +924,18 @@ def run_agentic_completion(messages: list, client_body: dict = None, web_search_
                     break
 
             if last_user:
-                try:
-                    working, imgs = _inject_tavily_results(working, last_user)
-                    collected_images.extend(imgs)
-                    tr.add("tool_call_ok", "Tavily pre-search injected", image_count=len(imgs))
-                except Exception as e2:
-                    tr.add("tool_call_error", f"Tavily pre-search failed: {e2}")
+                working, imgs = _inject_tavily_results(working, last_user)
+                collected_images.extend(imgs)
 
-            t_call2 = _time.time()
-            try:
-                result = call_model(working, client_body=client_body, tools=None, stream=False)
-                tr.add("model_call_ok", "degraded-mode model call succeeded",
-                       provider=result.get("provider"), model=result.get("model"),
-                       latency_ms=int((_time.time() - t_call2) * 1000))
-            except ProviderError as e2:
-                tr.add("model_call_error", f"degraded-mode model call also failed: {e2}",
-                       error=str(e2), latency_ms=int((_time.time() - t_call2) * 1000))
-                raise
-
-        if should_stream and "stream" in result and not degraded:
-            tr.add("routing", "handing off to client as a live stream", provider=result["provider"],
-                   model=result.get("model"))
-            return {
-                "stream": result["stream"],
-                "provider": result["provider"],
-                "model": result.get("model"),
-                "streaming": True,
-                "images": collected_images,
-                "trace": tr.events,
-            }
+            result = call_model(working, client_body=client_body, tools=None, tracer=tr)
 
         content = result.get("content") or ""
         search_tags = _extract_search_tags(content) if web_search_enabled else []
         fetch_tags = _extract_fetch_tags(content) if web_search_enabled else []
-        if search_tags or fetch_tags:
-            tr.add("tool_detect", f"model requested {len(search_tags)} search(es), {len(fetch_tags)} fetch(es)",
-                   iteration=iteration, search_count=len(search_tags), fetch_count=len(fetch_tags))
 
         if not search_tags and not fetch_tags:
-            tr.add("routing", "no tool tags in reply, returning final answer", iteration=iteration,
-                   degraded=degraded, content_chars=len(content))
             out = {
                 "content": content,
-                "provider": result["provider"],
-                "model": result.get("model"),
-                "streaming": False,
                 "images": collected_images,
                 "trace": tr.events,
             }
@@ -1529,30 +943,23 @@ def run_agentic_completion(messages: list, client_body: dict = None, web_search_
                 out["web_search_degraded"] = True
             return out
 
-        # Keep the model's tag message for context, inject real results, loop.
         working.append({"role": "assistant", "content": content})
 
         for raw_tag in search_tags:
             query, opts = _parse_search_tag(raw_tag)
             if not query:
-                tr.add("tool_call_error", "search tag had no query, skipped", raw_tag=raw_tag)
                 continue
             n = int(opts.get("n", default_max_results) or default_max_results)
             depth = opts.get("depth", "basic")
             include_images = opts.get("images", "yes").lower() not in ("no", "false", "0")
-            t_tool = _time.time()
             try:
                 search_data = web_search(query, max_results=n, search_depth=depth, include_images=include_images)
                 collected_images.extend(search_data.get("images", []))
                 tool_output = _format_search_context(query, search_data)
-                tr.add("tool_call_ok", f'[SEARCH: {query}] succeeded', query=query, n=n, depth=depth,
-                       result_count=len(search_data.get("results", []) or []),
-                       image_count=len(search_data.get("images", []) or []),
-                       latency_ms=int((_time.time() - t_tool) * 1000))
+                tr.add("search", f"searched: {query}")
             except Exception as e:
                 tool_output = f'Search for "{query}" failed: {e}'
-                tr.add("tool_call_error", f'[SEARCH: {query}] failed: {e}', query=query,
-                       latency_ms=int((_time.time() - t_tool) * 1000))
+                tr.add("search_failed", f"search failed: {query}")
             working.append({
                 "role": "system",
                 "content": (
@@ -1564,16 +971,13 @@ def run_agentic_completion(messages: list, client_body: dict = None, web_search_
             })
 
         for url in fetch_tags:
-            t_tool = _time.time()
             try:
                 title, text = fetch_page_text(url)
                 tool_output = f'Fetched page: {title}\nURL: {url}\n\n{text}'
-                tr.add("tool_call_ok", f'[FETCH: {url}] succeeded', url=url, title=title,
-                       chars=len(text), latency_ms=int((_time.time() - t_tool) * 1000))
+                tr.add("fetch", f"fetched: {url}")
             except Exception as e:
                 tool_output = f'Failed to fetch {url}: {e}'
-                tr.add("tool_call_error", f'[FETCH: {url}] failed: {e}', url=url,
-                       latency_ms=int((_time.time() - t_tool) * 1000))
+                tr.add("fetch_failed", f"fetch failed: {url}")
             working.append({
                 "role": "system",
                 "content": (
@@ -1582,11 +986,8 @@ def run_agentic_completion(messages: list, client_body: dict = None, web_search_
                 ),
             })
 
-    tr.add("error", "hit MAX_TOOL_ITERATIONS without a final answer", max_iterations=MAX_TOOL_ITERATIONS)
     out = {
         "content": "I wasn't able to finish that within the search-iteration limit.",
-        "provider": None,
-        "streaming": False,
         "images": collected_images,
         "trace": tr.events,
     }
@@ -1596,7 +997,7 @@ def run_agentic_completion(messages: list, client_body: dict = None, web_search_
 
 
 # =========================================================================
-# SYSTEM PROMPT — web search + JSON mode, same pattern
+# SYSTEM PROMPT — web search + JSON mode
 # =========================================================================
 
 def build_system_prompt(body: dict, is_json_retry: bool = False) -> str:
@@ -1613,8 +1014,12 @@ def build_system_prompt(body: dict, is_json_retry: bool = False) -> str:
         "and use it whenever asked about today's date, the current time, or how long "
         "ago/until something is." % utcnow().strftime("%A, %B %d, %Y, %H:%M UTC")
     )
+    lines.append(
+        "If asked what model, provider, or company is behind you, answer simply that "
+        "you are Sentry 1. Don't speculate about or name any underlying model, vendor, "
+        "or infrastructure — you don't have that information to share."
+    )
 
-    # ---- executable JavaScript (playground sandbox) ----
     lines.append("")
     lines.append("EXECUTABLE JAVASCRIPT — the playground can run JavaScript you write:")
     lines.append('- Write JavaScript inside a ```js fenced code block and the playground renders a "run" button next to it.')
@@ -1623,20 +1028,12 @@ def build_system_prompt(body: dict, is_json_retry: bool = False) -> str:
     lines.append("- Code must be self-contained. You may load external libraries only via a CDN <script> tag you write yourself inside the code.")
     lines.append("- Do NOT use executable code blocks for trivial one-liners or for code the user only wants to read/copy.")
 
-    # ---- image embedding rules ----
     lines.append("")
-    lines.append("IMAGE EMBEDDING — when you embed images using markdown ![description](url):")
-    lines.append("- The playground automatically scales every image to fit the chat width (nothing can overflow the screen), so never worry about pixel dimensions and never reference image size.")
+    lines.append("IMAGE EMBEDDING — this API is text-only input, but you may still embed images IN YOUR REPLY using markdown ![description](url), when a web search turned up a relevant image URL:")
+    lines.append("- The playground automatically scales every image to fit the chat width, so never worry about pixel dimensions.")
     lines.append("- Only embed an image when it genuinely helps the answer, and always write a meaningful description in the alt text.")
     lines.append("- If a search returned images, prefer the most relevant one rather than embedding many.")
 
-    # ---- reasoning effort identity ----
-    reasoning_cfg = body.get("reasoning") or {}
-    if reasoning_cfg.get("enabled"):
-        lines.append("")
-        lines.append(f"Your reasoning effort for this request is set to {(reasoning_cfg.get('effort') or 'medium').upper()} — this controls how long you should deliberate before answering.")
-
-    # ---- live web search (Tavily), model-controlled via tags ----
     if web_enabled:
         lines.append("")
         lines.append("LIVE WEB SEARCH (Tavily) — currently ENABLED. You control it directly by outputting tags in your reply:")
@@ -1657,9 +1054,8 @@ def build_system_prompt(body: dict, is_json_retry: bool = False) -> str:
         lines.append("LIVE WEB SEARCH (Tavily) — currently DISABLED by the user.")
         lines.append("- If asked about current events, news, prices, weather, or recent data, say search is available but turned off and suggest enabling it.")
         lines.append("- Do not pretend to search. Answer general knowledge directly.")
-        lines.append("- Never output anything shaped like [SEARCH: ...], [FETCH: ...], or a field describing a search you're about to run — not as plain text, and not as a JSON string value. Those tags only function when search is enabled; while it's off they are just meaningless text and must not appear anywhere in your reply.")
+        lines.append("- Never output anything shaped like [SEARCH: ...], [FETCH: ...], or a field describing a search you're about to run.")
 
-    # ---- JSON mode, same pattern: enabled via system prompt + enforced server-side ----
     if json_enabled and not is_json_retry:
         lines.append("")
         lines.append("JSON MODE — currently ENABLED. Your entire reply MUST be a single valid JSON value:")
@@ -1680,33 +1076,6 @@ def build_system_prompt(body: dict, is_json_retry: bool = False) -> str:
         lines.append("JSON MODE RETRY: your previous reply was not valid JSON. Output corrected raw JSON only, conforming to the schema above. No markdown fences, no commentary.")
 
     return "\n".join(lines)
-
-
-# =========================================================================
-# STREAMING HELPERS
-# =========================================================================
-
-def sse_stream_generator(stream_data):
-    """SSE format from provider stream. Gemini lines pass through as-is."""
-    try:
-        for line in stream_data:
-            if isinstance(line, bytes):
-                line = line.decode('utf-8')
-            if not line:
-                continue
-            if line.startswith('data: '):
-                yield line + '\n\n'
-            elif line.startswith('{'):
-                try:
-                    chunk = json.loads(line)
-                    yield f"data: {json.dumps(chunk)}\n\n"
-                except json.JSONDecodeError:
-                    continue
-        yield "data: [DONE]\n\n"
-    except Exception as e:
-        logger.error(f"Stream error: {e}")
-        yield f"data: {json.dumps({'error': str(e)})}\n\n"
-        yield "data: [DONE]\n\n"
 
 
 # =========================================================================
@@ -1732,8 +1101,14 @@ def create_app():
 
     @app.get("/healthz")
     def healthz():
-        return jsonify(ok=True, version=APP_VERSION, gemini_only=GEMINI_ONLY,
-                       gemini_keys_configured=len(GEMINI_KEYS))
+        # Internal-only: this endpoint is for your own uptime checks, not
+        # public docs. Still no real provider/model names, on principle.
+        return jsonify(
+            ok=True, version=APP_VERSION,
+            max_input_tokens=MAX_INPUT_TOKENS,
+            max_output_tokens=MAX_OUTPUT_TOKENS,
+            routes_configured=len(DEFAULT_ORDER),
+        )
 
     @app.get("/version")
     def version():
@@ -1750,9 +1125,6 @@ def create_app():
 
     @app.get("/v1/models")
     def list_models():
-        # sentry-1 is the single public-facing model id; the four real
-        # provider models it routes across (below) aren't separately
-        # selectable by clients anymore — no more reasoning tiers.
         return jsonify(data=[
             {"id": "sentry-1", "object": "model"},
         ])
@@ -1888,146 +1260,56 @@ def create_app():
 
         return jsonify(requests_today=history[-1], daily_cap=DAILY_REQUEST_CAP, history=history)
 
-    # ---------- Cloudinary upload endpoint ----------
-
-    @app.post("/console/upload")
-    def upload_to_cloudinary():
-        user_id, err = require_session()
-        if err:
-            return err
-
-        if 'file' not in request.files:
-            return jsonify(error="no file provided"), 400
-
-        file = request.files['file']
-        if file.filename == '':
-            return jsonify(error="no file selected"), 400
-
-        file.seek(0, os.SEEK_END)
-        size = file.tell()
-        file.seek(0)
-        if size > 10 * 1024 * 1024:
-            return jsonify(error="file too large (max 10MB)"), 413
-
-        if not CLOUDINARY_CLOUD_NAME or not CLOUDINARY_API_KEY or not CLOUDINARY_API_SECRET:
-            return jsonify(error="Cloudinary not configured"), 500
-
-        try:
-            import cloudinary
-            import cloudinary.uploader
-
-            cloudinary.config(
-                cloud_name=CLOUDINARY_CLOUD_NAME,
-                api_key=CLOUDINARY_API_KEY,
-                api_secret=CLOUDINARY_API_SECRET,
-                secure=True,
-            )
-
-            result = cloudinary.uploader.upload(
-                file,
-                resource_type="auto",
-                folder="sentry_uploads"
-            )
-
-            return jsonify({
-                "url": result["secure_url"],
-                "public_id": result["public_id"],
-                "resource_type": result["resource_type"],
-                "format": result.get("format"),
-                "bytes": result["bytes"]
-            })
-        except Exception as e:
-            logger.error(f"Cloudinary upload failed: {e}")
-            return jsonify(error=f"upload failed: {str(e)}"), 500
-
     # ---------- completions (shared core, two auth front-ends) ----------
 
     def completion_core(body: dict, api_key_id: int):
-        """Returns (response_dict_or_flask_response_parts, status, count)."""
+        """Returns (response_dict, status, count). Response never includes
+        real provider/model names — see Tracer and call_model() docstrings."""
         tr = Tracer()
         messages = body.get("messages") or []
         if not messages:
-            tr.add("error", "no messages in request body")
             return {"error": {"message": "messages required"}, "_debug_trace": tr.events}, 400, None
-
-        tr.add("request", "request received", message_count=len(messages),
-               web_search=bool((body.get("web_search") or {}).get("enabled")),
-               json_mode=bool(body.get("response_format")), stream=bool(body.get("stream")),
-               effort=(body.get("reasoning") or {}).get("effort"))
 
         is_json_retry = bool(body.get("_json_retry"))
         system_content = build_system_prompt(body, is_json_retry=is_json_retry)
         messages.insert(0, {"role": "system", "content": system_content})
-        tr.add("routing", "system prompt built", is_json_retry=is_json_retry, chars=len(system_content))
-
-        try:
-            messages = _transcribe_audio_blocks(messages)
-        except Exception as e:
-            logger.error(f"audio preprocessing failed: {e}")
-            tr.add("error", f"audio preprocessing failed: {e}")
-            return {"error": {"message": f"Failed to process audio: {e}"}, "_debug_trace": tr.events}, 502, None
+        tr.add("routing", "request received")
 
         tokens_in = estimate_tokens(messages)
-        tr.add("routing", f"estimated {tokens_in} input tokens", tokens_in=tokens_in, limit=MAX_INPUT_TOKENS)
         if tokens_in > MAX_INPUT_TOKENS:
-            tr.add("error", "input exceeds token limit", tokens_in=tokens_in, limit=MAX_INPUT_TOKENS)
+            tr.add("error", "input exceeds token limit")
             return {"error": {"message": f"request exceeds the {MAX_INPUT_TOKENS}-token limit"}, "_debug_trace": tr.events}, 413, None
 
         count = check_and_increment_rate_limit(api_key_id, tokens_in=tokens_in)
         set_rate_limit_headers(count)
-        tr.add("routing", f"rate limit check: {count}/{DAILY_REQUEST_CAP} requests today", count=count, cap=DAILY_REQUEST_CAP)
         if count > DAILY_REQUEST_CAP:
-            tr.add("error", "daily request cap exceeded")
             resp = jsonify(error={"message": "daily request cap exceeded"}, _debug_trace=tr.events)
             resp.status_code = 429
             resp.headers["Retry-After"] = str(seconds_until_midnight_utc())
             return None, 429, count
 
         web_search_enabled = bool((body.get("web_search") or {}).get("enabled"))
-        stream = bool(body.get("stream"))
 
         try:
-            result = run_agentic_completion(
-                messages,
-                client_body=body,
-                web_search_enabled=web_search_enabled,
-                stream=stream,
-                tracer=tr,
-            )
+            result = run_agentic_completion(messages, client_body=body, web_search_enabled=web_search_enabled, tracer=tr)
         except ProviderError as e:
-            logger.error(f"Provider error: {e}")
-            tr.add("error", f"provider error: {e}")
+            # e's message is already the generic customer-facing string —
+            # call_model() logged the real per-provider detail already.
+            tr.add("error", "request failed")
             return {"error": {"message": str(e)}, "_debug_trace": tr.events}, 502, count
 
-        # Handle streaming response
-        if result.get("streaming") and "stream" in result:
-            return {
-                "streaming": True,
-                "stream": result["stream"],
-                "provider": result["provider"],
-                "model": result.get("model"),
-                "images": result.get("images", []),
-                "trace": result.get("trace", tr.events),
-            }, 200, count
-
-        chosen_model = _gemini_model_for_request(body)
-
-        # Validate JSON if response_format requested
-        response_format = body.get("response_format")
         content = result["content"]
+        response_format = body.get("response_format")
         if response_format:
-            tr.add("routing", "validating JSON mode output")
             try:
                 content = validate_and_fix_json(content, response_format, messages, body, api_key_id)
-                tr.add("routing", "JSON validation passed")
             except ProviderError as e:
-                tr.add("error", f"JSON validation failed: {e}")
+                tr.add("error", "JSON validation failed")
                 return {"error": {"message": str(e)}, "_debug_trace": tr.events}, 502, count
 
         tokens_out = estimate_tokens([{"content": content}])
         record_tokens_out(api_key_id, tokens_out)
-        tr.add("routing", "request complete", tokens_out=tokens_out, provider=result.get("provider"),
-               model=result.get("model"))
+        tr.add("routing", "request complete")
 
         payload = {
             "id": "chatcmpl-sentry1",
@@ -2036,9 +1318,6 @@ def create_app():
             "choices": [
                 {"index": 0, "message": {"role": "assistant", "content": content}}
             ],
-            "_provider_used": result["provider"],
-            "_gemini_model": result.get("model"),
-            **({"_reasoning_downgraded": True} if (result.get("model") and result["model"] != chosen_model) else {}),
             "usage": {"prompt_tokens_est": tokens_in, "completion_tokens_est": tokens_out},
             "_debug_trace": result.get("trace", tr.events),
         }
@@ -2047,31 +1326,6 @@ def create_app():
         if result.get("web_search_degraded"):
             payload["_web_search_degraded"] = True
         return payload, 200, count
-
-    def sse_response(stream_data, provider, model=None, images=None, trace=None):
-        """Create a proper SSE response. Search images and the debug trace
-        ride along as SSE comment-style events the playground can pick up."""
-        headers = {
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-            "X-Provider-Used": provider,
-        }
-        if model:
-            headers["X-Gemini-Model"] = model
-
-        def generate():
-            if trace:
-                yield f"event: debug\ndata: {json.dumps({'trace': trace})}\n\n"
-            if images:
-                yield f"event: search-images\ndata: {json.dumps({'images': images})}\n\n"
-            for chunk in sse_stream_generator(stream_data):
-                yield chunk
-
-        return Response(
-            stream_with_context(generate()),
-            mimetype="text/event-stream",
-            headers=headers,
-        )
 
     @app.post("/v1/chat/completions")
     def chat_completions():
@@ -2085,10 +1339,6 @@ def create_app():
             return payload
         if status != 200:
             return jsonify(payload), status
-        if payload.get("streaming"):
-            return sse_response(payload["stream"], payload["provider"],
-                                model=payload.get("model"), images=payload.get("images"),
-                                trace=payload.get("trace"))
         return jsonify(payload)
 
     @app.post("/console/playground/chat")
@@ -2108,10 +1358,6 @@ def create_app():
             return payload
         if status != 200:
             return jsonify(payload), status
-        if payload.get("streaming"):
-            return sse_response(payload["stream"], payload["provider"],
-                                model=payload.get("model"), images=payload.get("images"),
-                                trace=payload.get("trace"))
         return jsonify(payload)
 
     return app
