@@ -218,7 +218,6 @@ python server.py
 
 Environment Configuration
 
-Provider credentials and application secrets should be supplied through environment variables.
 
 Example:
 
@@ -233,13 +232,6 @@ TAVILY_API_KEY_1
 TAVILY_API_KEY_2
 PROVIDER_ORDER
 
-Never commit real credentials to source control.
-
-Security Notice
-
-Before using this repository publicly or in a job application, rotate any credentials that have previously appeared in the source code.
-
-The current public "server.py" contains provider credentials in configuration defaults. Those credentials should be revoked, replaced with environment variables, and removed from the repository history.
 
 Project Status
 
